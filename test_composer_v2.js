@@ -12,6 +12,7 @@ const {
 const {
   buildSessionExportText,
   assembleSessionBlocks,
+  getFragmentHeadingLevel,
 } = require('./docx_export');
 const {
   extractAuditJSON,
@@ -64,6 +65,25 @@ function runTests() {
   const headings = blocks.segments.filter((s) => s.type === 'heading');
   assert.strictEqual(headings.length, 1, 'un solo encabezado marcado');
   assert.strictEqual(headings[0].title, 'Marco Teórico');
+  assert.strictEqual(headings[0].level, 1, 'isChapterStart legacy -> headingLevel 1');
+  assert.strictEqual(getFragmentHeadingLevel(withChapter.chapters.find((ch) => ch.isChapterStart)), 1);
+
+  addChapter(session.id, {
+    originalText: 'Sección metodológica con detalle de muestra.',
+    audit: 'Auditoría método',
+    optimizedText: 'Sección metodológica optimizada con detalle de muestra.',
+    headingLevel: 2,
+    chapterTitle: 'Diseño Metodológico',
+  });
+
+  const withSubchapter = getSession(session.id);
+  const subBlocks = assembleSessionBlocks(withSubchapter.chapters);
+  const subHeadings = subBlocks.segments.filter((s) => s.type === 'heading');
+  assert.strictEqual(subHeadings.length, 2, 'capítulo + subtítulo');
+  assert.strictEqual(subHeadings[1].level, 2);
+  assert.strictEqual(subHeadings[1].title, 'Diseño Metodológico');
+  const subExport = buildSessionExportText(withSubchapter);
+  assert.ok(subExport.includes('Diseño Metodológico'), 'subtítulo presente en export');
 
   const original = 'Según (García, 2019), la Ley N° 24521 regula el 45% de los casos.';
   const auditRaw = JSON.stringify({

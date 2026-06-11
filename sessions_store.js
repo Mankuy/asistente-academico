@@ -164,6 +164,20 @@ function deleteSession(id) {
   return true;
 }
 
+function resolveHeadingLevel(payload = {}) {
+  if (payload.headingLevel !== undefined && payload.headingLevel !== null) {
+    const level = Number(payload.headingLevel);
+    if (level === 1 || level === 2) return level;
+    return 0;
+  }
+  return Boolean(payload.isChapterStart) ? 1 : 0;
+}
+
+function resolveChapterTitle(headingLevel, payload = {}) {
+  if (!headingLevel) return '';
+  return sanitizeLine(payload.chapterTitle) || '';
+}
+
 function addChapter(sessionId, payload = {}) {
   const session = getSession(sessionId);
   if (!session) return null;
@@ -177,13 +191,15 @@ function addChapter(sessionId, payload = {}) {
     throw new Error('Capítulo incompleto: se requiere originalText, audit y optimizedText.');
   }
 
-  const isChapterStart = Boolean(payload.isChapterStart);
-  const chapterTitle = isChapterStart ? sanitizeLine(payload.chapterTitle) : '';
+  const headingLevel = resolveHeadingLevel(payload);
+  const isChapterStart = headingLevel === 1;
+  const chapterTitle = resolveChapterTitle(headingLevel, payload);
 
   const chapter = {
     id: generateId(),
     index: chapterIndex,
     title: sanitizeLine(payload.title) || deriveTitleFromText(originalText, CHAPTER_TITLE_MAX) || `Fragmento ${chapterIndex}`,
+    headingLevel,
     isChapterStart,
     chapterTitle,
     originalText,
@@ -330,4 +346,5 @@ module.exports = {
   recordSessionUsage,
   buildSessionContextForLlm,
   deriveTitleFromText,
+  resolveHeadingLevel,
 };

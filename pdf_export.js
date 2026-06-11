@@ -44,6 +44,17 @@ function writeHeading(doc, title, norma) {
   doc.moveDown(0.4);
 }
 
+function writeSubheading(doc, title) {
+  doc.moveDown(0.35);
+  doc.font('Times-Bold').fontSize(FONT_SIZE);
+  doc.text(title, {
+    align: 'left',
+    lineGap: 3,
+  });
+  doc.font('Times-Roman').fontSize(FONT_SIZE);
+  doc.moveDown(0.25);
+}
+
 function writeCover(doc, { title, author, norma }) {
   doc.moveDown(6);
   if (norma.startsWith('MLA')) {
@@ -117,7 +128,11 @@ async function exportPdfEntregable({
 
   for (const segment of segments) {
     if (segment.type === 'heading') {
-      writeHeading(doc, segment.title, norma);
+      if (segment.level === 2) {
+        writeSubheading(doc, segment.title);
+      } else {
+        writeHeading(doc, segment.title, norma);
+      }
       continue;
     }
 

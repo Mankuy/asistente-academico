@@ -1228,6 +1228,7 @@ const chapterCreateSchema = Joi.object({
   auditJson: Joi.object().allow(null).optional(),
   optimizedText: Joi.string().trim().min(1).max(5000000).required(),
   title: Joi.string().trim().max(120).allow('').optional(),
+  headingLevel: Joi.number().integer().valid(0, 1, 2).optional(),
   isChapterStart: Joi.boolean().optional(),
   chapterTitle: Joi.string().trim().max(120).allow('').optional(),
   norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),

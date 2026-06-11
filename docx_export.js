@@ -48,16 +48,31 @@ function getSortedFragments(chapters) {
   return [...(chapters || [])].sort((a, b) => (a.index || 0) - (b.index || 0));
 }
 
+function getFragmentHeadingLevel(fragment) {
+  if (!fragment) return 0;
+  if (fragment.headingLevel !== undefined && fragment.headingLevel !== null) {
+    const level = Number(fragment.headingLevel);
+    return level === 1 || level === 2 ? level : 0;
+  }
+  return fragment.isChapterStart ? 1 : 0;
+}
+
 function assembleSessionBlocks(chapters) {
   const sorted = getSortedFragments(chapters);
   let markedChapterNum = 0;
   const segments = [];
 
   for (const fragment of sorted) {
-    if (Boolean(fragment.isChapterStart)) {
+    const headingLevel = getFragmentHeadingLevel(fragment);
+    if (headingLevel === 1) {
       markedChapterNum += 1;
       const title = String(fragment.chapterTitle || '').trim() || `Capítulo ${markedChapterNum}`;
-      segments.push({ type: 'heading', title });
+      segments.push({ type: 'heading', level: 1, title });
+    } else if (headingLevel === 2) {
+      const title = String(fragment.chapterTitle || '').trim();
+      if (title) {
+        segments.push({ type: 'heading', level: 2, title });
+      }
     }
 
     const body = splitBodyAndReferences(fragment.optimizedText || '').body;
@@ -96,11 +111,24 @@ function headingParagraph(title, norma) {
   });
 }
 
+function subheadingParagraph(title, norma) {
+  const isApa = String(norma || '').startsWith('APA');
+  return new Paragraph({
+    alignment: AlignmentType.LEFT,
+    spacing: { before: isApa ? 240 : 200, after: 160 },
+    children: [new TextRun({ text: title, bold: true, size: isApa ? 24 : 22 })],
+  });
+}
+
 function buildBodyFromSegments(segments, norma) {
   const children = [];
   for (const segment of segments) {
     if (segment.type === 'heading') {
-      children.push(headingParagraph(segment.title, norma));
+      if (segment.level === 2) {
+        children.push(subheadingParagraph(segment.title, norma));
+      } else {
+        children.push(headingParagraph(segment.title, norma));
+      }
       continue;
     }
     children.push(...bodyParagraphs(segment.text, norma));
@@ -349,6 +377,7 @@ module.exports = {
   exportDocxEntregable,
   buildSessionExportText,
   assembleSessionBlocks,
+  getFragmentHeadingLevel,
   getSortedFragments,
   splitBodyAndReferences,
 };
