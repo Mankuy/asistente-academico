@@ -1522,6 +1522,7 @@
             total: 0,
             costAccum: 0,
         };
+        let thesisResumeState = null;
         const normaSelect = document.getElementById('norma-select');
         const nivelSelect = document.getElementById('nivel-select');
         const themeBtn = document.getElementById('theme-btn');
@@ -1987,6 +1988,30 @@
             }, 4200);
         }
 
+        async function handleRetryClick() {
+            clearRetryCountdown();
+
+            if (thesisResumeState?.chunks?.length && thesisResumeState.sessionId) {
+                await resumeThesisMode();
+                return;
+            }
+
+            if (pendingRewriteContext?.text) {
+                await runRewriteFromReview();
+                return;
+            }
+
+            if (lastAnalysisContext?.text) {
+                await fetchSuggestion(lastAnalysisContext.text, {
+                    forceRetry: true,
+                    costConfirmed: Boolean(lastAnalysisContext.costConfirmed),
+                });
+                return;
+            }
+
+            showToast('No hay contexto guardado para reintentar.', true);
+        }
+
         function showError(message, options = {}) {
             clearRetryCountdown();
             const retryable = Boolean(options.retryable);
@@ -2000,9 +2025,13 @@
             if (retryable) {
                 const retryBtn = document.getElementById('retry-analysis-btn');
                 if (retryBtn) {
-                    retryBtn.addEventListener('click', () => {
-                        if (lastAnalysisContext?.text) {
-                            fetchSuggestion(lastAnalysisContext.text, { forceRetry: true });
+                    retryBtn.addEventListener('click', async () => {
+                        retryBtn.disabled = true;
+                        try {
+                            await handleRetryClick();
+                        } catch (retryErr) {
+                            console.error('Retry error:', retryErr);
+                            showError(retryErr.message || 'El reintento falló.', { retryable: true, retryHint: options.retryHint });
                         }
                     });
                 }
@@ -2422,11 +2451,13 @@
                 }
 
                 syncSessionUsage(rewriteResult.data.usage);
+                const rewriteCtx = { ...ctx };
+                pendingRewriteContext = null;
                 await finalizeAnalysis(
-                    ctx.text,
-                    ctx.audit,
-                    ctx.auditJson,
-                    ctx.auditMode,
+                    rewriteCtx.text,
+                    rewriteCtx.audit,
+                    rewriteCtx.auditJson,
+                    rewriteCtx.auditMode,
                     optimizedText,
                     rewriteResult.data.integrity,
                     rewriteResult.data.modelUsed
@@ -2435,7 +2466,6 @@
                 showError(error.message || 'No se pudo completar la optimización.', { retryable: true });
             } finally {
                 analysisInFlight = false;
-                pendingRewriteContext = null;
             }
         }
 
@@ -2484,7 +2514,15 @@
         function isRetryableApiData(data, status) {
             if (data?.retryable) return true;
             const blob = `${data?.error || ''} ${data?.details || ''}`.toLowerCase();
-            return status === 429 || /rate.?limit|too many|overloaded|try again|temporarily|timeout|busy/.test(blob);
+            return status === 429
+                || status === 502
+                || status === 504
+                || /rate.?limit|too many|overloaded|try again|temporarily|timeout|busy|networkerror|failed to fetch|network error/.test(blob);
+        }
+
+        function isRetryableThrownError(error) {
+            const blob = `${error?.name || ''} ${error?.message || ''}`.toLowerCase();
+            return /networkerror|failed to fetch|timeout|abort|temporarily|fetch/i.test(blob);
         }
 
         function getRetryWaitMs(data, attempt) {
@@ -3181,7 +3219,9 @@
                 return;
             } catch (error) {
                 console.error('Error al obtener sugerencia:', error);
-                showError(error.message || 'No se pudo completar el análisis.', { retryable: true });
+                showError(error.message || 'No se pudo completar el análisis.', {
+                    retryable: isRetryableThrownError(error) || Boolean(lastAnalysisContext?.text),
+                });
             } finally {
                 analysisInFlight = false;
             }
@@ -3469,6 +3509,84 @@
             });
         }
 
+        async function processThesisChunksFromIndex(startIndex = 0) {
+            if (!thesisResumeState?.chunks?.length || !thesisResumeState.sessionId) {
+                throw new Error('No hay estado de tesis para continuar.');
+            }
+
+            const { chunks, sessionId } = thesisResumeState;
+            thesisJob.running = true;
+            thesisJob.total = chunks.length;
+            thesisBtn.disabled = true;
+            skipAutoAnalyze = true;
+
+            try {
+                setActiveSession(sessionId);
+                if (!activeSessionData || activeSessionData.id !== sessionId) {
+                    await loadSessionDetails(sessionId);
+                }
+
+                for (let i = startIndex; i < chunks.length; i += 1) {
+                    thesisResumeState.chunkIndex = i;
+
+                    while (thesisJob.paused && !thesisJob.cancelled) {
+                        await sleep(400);
+                    }
+                    if (thesisJob.cancelled) break;
+
+                    thesisJob.current = i + 1;
+                    showThesisProgress(`Procesando fragmento ${i + 1} de ${chunks.length}…`);
+                    await processThesisChunkAuto(chunks[i], sessionId, i + 1, chunks.length);
+                    await loadSessionDetails(sessionId);
+                    await refreshSessionsList(sessionId);
+                }
+
+                if (thesisJob.cancelled) {
+                    thesisResumeState = null;
+                    learningPanel.innerHTML = '<p>Modo Tesis cancelado. Los fragmentos ya procesados quedaron guardados.</p>';
+                    return;
+                }
+
+                thesisResumeState = null;
+                activeChapterId = FULL_SESSION_VIEW_ID;
+                showFullSessionOptimized(activeSessionData.chapters);
+            } catch (error) {
+                console.error('Modo Tesis error:', error);
+                const failedAt = (thesisResumeState?.chunkIndex ?? startIndex) + 1;
+                const total = thesisResumeState?.chunks?.length || thesisJob.total;
+                showError(error.message || 'Falló el Modo Tesis.', {
+                    retryable: true,
+                    retryHint: total
+                        ? `Reintentar continuará desde el fragmento ${failedAt} de ${total}, sin reiniciar la tesis.`
+                        : 'Reintentar continuará desde el fragmento que falló.',
+                });
+                throw error;
+            } finally {
+                thesisJob.running = false;
+                thesisBtn.disabled = false;
+                skipAutoAnalyze = false;
+            }
+        }
+
+        async function resumeThesisMode() {
+            if (!thesisResumeState?.chunks?.length || !thesisResumeState.sessionId) {
+                showToast('No hay una tesis pausada para reanudar.', true);
+                return;
+            }
+            if (thesisJob.running) return;
+
+            const resumeIndex = Math.max(0, Number(thesisResumeState.chunkIndex) || 0);
+            thesisJob.paused = false;
+            thesisJob.cancelled = false;
+            showThesisProgress(`Reintentando fragmento ${resumeIndex + 1} de ${thesisResumeState.chunks.length}…`);
+
+            try {
+                await processThesisChunksFromIndex(resumeIndex);
+            } catch {
+                // showError ya informó al usuario
+            }
+        }
+
         async function runThesisMode(file) {
             if (thesisJob.running) {
                 showError('Ya hay un procesamiento de tesis en curso.');
@@ -3505,30 +3623,23 @@
 
                 setActiveSession(session.id);
                 activeSessionData = session;
-                thesisJob.total = chunks.length;
+                thesisResumeState = {
+                    chunks,
+                    sessionId: session.id,
+                    chunkIndex: 0,
+                    fileLabel: file.name,
+                };
 
-                for (let i = 0; i < chunks.length; i += 1) {
-                    while (thesisJob.paused && !thesisJob.cancelled) {
-                        await sleep(400);
-                    }
-                    if (thesisJob.cancelled) break;
-
-                    thesisJob.current = i + 1;
-                    showThesisProgress(`Procesando fragmento ${i + 1} de ${chunks.length}…`);
-                    await processThesisChunkAuto(chunks[i], session.id, i + 1, chunks.length);
-                    await loadSessionDetails(session.id);
-                    await refreshSessionsList(session.id);
-                }
-
-                if (thesisJob.cancelled) {
-                    learningPanel.innerHTML = '<p>Modo Tesis cancelado. Los fragmentos ya procesados quedaron guardados.</p>';
-                } else {
-                    activeChapterId = FULL_SESSION_VIEW_ID;
-                    showFullSessionOptimized(activeSessionData.chapters);
-                }
+                thesisJob.running = false;
+                thesisBtn.disabled = false;
+                await processThesisChunksFromIndex(0);
             } catch (error) {
-                console.error('Modo Tesis error:', error);
-                showError(error.message || 'Falló el Modo Tesis.', { retryable: true });
+                if (!thesisResumeState) {
+                    console.error('Modo Tesis setup error:', error);
+                    showError(error.message || 'Falló el Modo Tesis.', {
+                        retryable: isRetryableThrownError(error),
+                    });
+                }
             } finally {
                 thesisJob.running = false;
                 thesisBtn.disabled = false;
