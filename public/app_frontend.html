@@ -979,6 +979,16 @@
         }
         .usage-meter.hidden { display: none; }
         .usage-meter strong { display: block; margin-bottom: 0.15rem; }
+        .model-trace-badge {
+            display: inline-block;
+            font-size: 0.72rem;
+            color: var(--muted);
+            background: var(--badge-bg);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 0.2rem 0.55rem;
+            margin: 0 0 0.65rem;
+        }
         .badge.bunker-on {
             background: rgba(25, 135, 84, 0.18);
             border: 1px solid rgba(25, 135, 84, 0.35);
@@ -1381,7 +1391,7 @@
                 <div class="fragment-heading-options" role="radiogroup" aria-label="Estructura del fragmento">
                     <label>
                         <input type="radio" name="fragment-heading-level" value="0" checked>
-                        Sin título
+                        Texto continuo
                     </label>
                     <label>
                         <input type="radio" name="fragment-heading-level" value="1">
@@ -2008,6 +2018,12 @@
             `;
         }
 
+        function buildModelTraceBadgeHtml(modelUsed) {
+            const label = String(modelUsed || '').trim();
+            if (!label) return '';
+            return `<div class="model-trace-badge" aria-label="Modelo utilizado">🤖 Modelo: ${escapeHtml(label)}</div>`;
+        }
+
         function showChapterSavedBanner(chapterTitle, chapterIndex) {
             return `
                 <div class="chapter-saved-banner">
@@ -2281,9 +2297,11 @@
             });
         }
 
-        function showAuditReview(auditJson, auditProse, auditMode) {
+        function showAuditReview(auditJson, auditProse, auditMode, modelUsed = null) {
+            const modelBadge = buildModelTraceBadgeHtml(modelUsed);
             if (!auditJson || auditMode !== 'json') {
                 learningPanel.innerHTML = `
+                    ${modelBadge}
                     <section class="analysis-section audit-section">
                         <h3>🔍 Auditoría (modo prosa)</h3>
                         <div class="analysis-content">${escapeHtml(auditProse)}</div>
@@ -2303,6 +2321,7 @@
             const biblioHtml = (auditJson.biblio_check || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
 
             learningPanel.innerHTML = `
+                ${modelBadge}
                 <section class="analysis-section audit-section">
                     <h3>🔍 Auditoría estructurada</h3>
                     <div class="audit-summary">
@@ -2319,9 +2338,10 @@
             document.getElementById('run-rewrite-btn')?.addEventListener('click', runRewriteFromReview);
         }
 
-        function showPedagogicalAnalysis(auditJson, auditProse, auditMode, optimizedText, bannerHtml = '', integrity = null) {
+        function showPedagogicalAnalysis(auditJson, auditProse, auditMode, optimizedText, bannerHtml = '', integrity = null, modelUsed = null) {
             const cleanOptimized = sanitizeZeroWidthClient(optimizedText);
             const integrityHtml = buildIntegrityBannerHtml(integrity);
+            const modelBadge = buildModelTraceBadgeHtml(modelUsed);
             const auditSection = auditJson && auditMode === 'json'
                 ? (() => {
                     const cardsHtml = auditJson.sugerencias.map((item) => {
@@ -2347,6 +2367,7 @@
             learningPanel.innerHTML = `
                 ${bannerHtml}
                 <div class="analysis-result">
+                    ${modelBadge}
                     ${auditSection}
                     <section class="analysis-section optimized-section">
                         ${integrityHtml}
@@ -2363,8 +2384,8 @@
             if (auditJson && auditMode === 'json') bindSuggestionCardEvents();
         }
 
-        function showDualAnalysis(audit, optimizedText, bannerHtml = '', auditJson = null, auditMode = 'prose', integrity = null) {
-            showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, bannerHtml, integrity);
+        function showDualAnalysis(audit, optimizedText, bannerHtml = '', auditJson = null, auditMode = 'prose', integrity = null, modelUsed = null) {
+            showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, bannerHtml, integrity, modelUsed);
         }
 
         async function runRewriteFromReview() {
@@ -2401,7 +2422,15 @@
                 }
 
                 syncSessionUsage(rewriteResult.data.usage);
-                await finalizeAnalysis(ctx.text, ctx.audit, ctx.auditJson, ctx.auditMode, optimizedText, rewriteResult.data.integrity);
+                await finalizeAnalysis(
+                    ctx.text,
+                    ctx.audit,
+                    ctx.auditJson,
+                    ctx.auditMode,
+                    optimizedText,
+                    rewriteResult.data.integrity,
+                    rewriteResult.data.modelUsed
+                );
             } catch (error) {
                 showError(error.message || 'No se pudo completar la optimización.', { retryable: true });
             } finally {
@@ -2410,11 +2439,11 @@
             }
         }
 
-        async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText, integrity = null) {
+        async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText, integrity = null, modelUsed = null) {
             clearRetryCountdown();
             lastAnalysisContext = null;
 
-            const savedChapter = await saveChapterToSession(text, audit, optimizedText, auditJson);
+            const savedChapter = await saveChapterToSession(text, audit, optimizedText, auditJson, null, modelUsed);
             const banner = savedChapter
                 ? showChapterSavedBanner(savedChapter.title, savedChapter.index)
                 : '';
@@ -2428,7 +2457,7 @@
                 showFullSessionOptimized(activeSessionData.chapters, banner);
                 setTimeout(() => { skipAutoAnalyze = false; }, 0);
             } else {
-                showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, banner, integrity);
+                showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, banner, integrity, modelUsed);
             }
         }
 
@@ -3011,7 +3040,7 @@
             await refreshSessionsList(activeSessionId);
         }
 
-        async function saveChapterToSession(originalText, audit, optimizedText, auditJson = null, fragmentMeta = null) {
+        async function saveChapterToSession(originalText, audit, optimizedText, auditJson = null, fragmentMeta = null, modelUsed = null) {
             const session = await ensureActiveSession(originalText);
             if (!session) return null;
 
@@ -3027,6 +3056,7 @@
                     headingLevel: fragmentOptions.headingLevel ?? 0,
                     isChapterStart: Boolean(fragmentOptions.isChapterStart),
                     chapterTitle: fragmentOptions.chapterTitle || '',
+                    modelUsed: modelUsed || fragmentOptions.modelUsed || null,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
                 }),
@@ -3062,7 +3092,15 @@
             renderChaptersList(activeSessionData.chapters);
             skipAutoAnalyze = true;
             editor.value = chapter.originalText;
-            showPedagogicalAnalysis(chapter.auditJson, chapter.audit, chapter.auditJson ? 'json' : 'prose', chapter.optimizedText);
+            showPedagogicalAnalysis(
+                chapter.auditJson,
+                chapter.audit,
+                chapter.auditJson ? 'json' : 'prose',
+                chapter.optimizedText,
+                '',
+                null,
+                chapter.modelUsed
+            );
             setTimeout(() => { skipAutoAnalyze = false; }, 0);
         }
 
@@ -3139,7 +3177,7 @@
                 lastAnalysisContext = { ...pendingRewriteContext };
 
                 analysisInFlight = false;
-                showAuditReview(auditJson, audit, auditMode);
+                showAuditReview(auditJson, audit, auditMode, auditData.modelUsed);
                 return;
             } catch (error) {
                 console.error('Error al obtener sugerencia:', error);
@@ -3254,7 +3292,8 @@
             return `No se pudo extraer texto del ${extension.toUpperCase()}: ${message}`;
         }
 
-        const THESIS_CHUNK_MAX_WORDS = 1500;
+        const THESIS_CHUNK_MAX_WORDS = 700;
+        const THESIS_CHUNK_OVERLAP_WORDS = 100;
 
         function buildThesisChunkMeta(headingLevel, chapterTitle, text) {
             return {
@@ -3290,18 +3329,27 @@
             return buildThesisChunkMeta(0, '', trimmed);
         }
 
-        function splitChunkByMaxWords(chunk, maxWords) {
+        function splitChunkByMaxWords(chunk, maxWords, overlapWords = THESIS_CHUNK_OVERLAP_WORDS) {
             const words = String(chunk.text || '').split(/\s+/).filter(Boolean);
             if (words.length <= maxWords) return [chunk];
 
             const slices = [];
-            for (let i = 0; i < words.length; i += maxWords) {
-                const preserveHeading = i === 0;
+            let start = 0;
+            let sliceIndex = 0;
+            const step = Math.max(1, maxWords - overlapWords);
+
+            while (start < words.length) {
+                const end = Math.min(start + maxWords, words.length);
+                const preserveHeading = sliceIndex === 0;
                 slices.push(buildThesisChunkMeta(
                     preserveHeading ? chunk.headingLevel : 0,
                     preserveHeading ? chunk.chapterTitle : '',
-                    words.slice(i, i + maxWords).join(' ')
+                    words.slice(start, end).join(' ')
                 ));
+
+                if (end >= words.length) break;
+                start += step;
+                sliceIndex += 1;
             }
             return slices;
         }
@@ -3414,6 +3462,7 @@
                     headingLevel: chunkMeta.headingLevel,
                     isChapterStart: chunkMeta.headingLevel === 1,
                     chapterTitle: chunkMeta.headingLevel > 0 ? chunkMeta.chapterTitle : '',
+                    modelUsed: rewriteResp.data.modelUsed || null,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
                 }),

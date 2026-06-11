@@ -206,6 +206,7 @@ function addChapter(sessionId, payload = {}) {
     audit,
     auditJson: payload.auditJson && typeof payload.auditJson === 'object' ? payload.auditJson : null,
     optimizedText,
+    modelUsed: sanitizeLine(payload.modelUsed) || null,
     norma: payload.norma || session.norma,
     nivel: payload.nivel || session.nivel,
     createdAt: new Date().toISOString(),

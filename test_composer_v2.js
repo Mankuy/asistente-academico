@@ -74,6 +74,7 @@ function runTests() {
     optimizedText: 'Sección metodológica optimizada con detalle de muestra.',
     headingLevel: 2,
     chapterTitle: 'Diseño Metodológico',
+    modelUsed: 'nemotron-3-ultra-550b-a55b:free',
   });
 
   const withSubchapter = getSession(session.id);
@@ -84,6 +85,9 @@ function runTests() {
   assert.strictEqual(subHeadings[1].title, 'Diseño Metodológico');
   const subExport = buildSessionExportText(withSubchapter);
   assert.ok(subExport.includes('Diseño Metodológico'), 'subtítulo presente en export');
+  assert.ok(!subExport.includes('nemotron'), 'modelUsed no contamina export');
+  const subChapter = withSubchapter.chapters.find((ch) => ch.chapterTitle === 'Diseño Metodológico');
+  assert.strictEqual(subChapter.modelUsed, 'nemotron-3-ultra-550b-a55b:free');
 
   const original = 'Según (García, 2019), la Ley N° 24521 regula el 45% de los casos.';
   const auditRaw = JSON.stringify({

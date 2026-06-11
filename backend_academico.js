@@ -670,7 +670,7 @@ async function callLlmOnce(systemPrompt, userText, opts = {}) {
       method: 'POST',
       headers: buildProviderHeaders(providerId, apiKey),
       body: JSON.stringify(buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens, temperature, jsonMode)),
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(300000),
     });
   } catch (networkErr) {
     const isTimeout = networkErr.name === 'AbortError' || networkErr.name === 'TimeoutError';
@@ -723,7 +723,7 @@ async function callLlmOnce(systemPrompt, userText, opts = {}) {
     );
   }
 
-  return content;
+  return { content, modelUsed: model };
 }
 
 async function callLlm(systemPrompt, userText, opts = {}) {
@@ -894,7 +894,7 @@ async function classifyIntentLLM(text) {
   }
 
   try {
-    const raw = await callLlmOnce(GUARDIAN_SYSTEM_PROMPT, snippet, {
+    const { content: raw } = await callLlmOnce(GUARDIAN_SYSTEM_PROMPT, snippet, {
       model: getLlmFastModel(),
       maxTokens: 20,
       temperature: 0,
@@ -1082,11 +1082,11 @@ async function buildAllowedCitationsForIntegrity(inputText, sessionContext = nul
 
 async function runAuditStage(inputText, norma, nivel, sessionContext = null) {
   const contextualizedText = await buildContextualizedUserText(inputText, norma, nivel, sessionContext);
-  const auditRaw = await callLlm(AUDIT_SYSTEM_PROMPT_JSON, contextualizedText, {
+  const { content: auditRaw, modelUsed } = await callLlm(AUDIT_SYSTEM_PROMPT_JSON, contextualizedText, {
     maxTokens: LLM_MAX_TOKENS_AUDIT,
     jsonMode: true,
   });
-  return extractAuditJSON(auditRaw, inputText);
+  return { ...extractAuditJSON(auditRaw, inputText), modelUsed };
 }
 
 async function runRewriteStage(inputText, norma, nivel, auditResult, sessionContext = null) {
@@ -1094,12 +1094,13 @@ async function runRewriteStage(inputText, norma, nivel, auditResult, sessionCont
     ? auditResult
     : formatAuditForRewrite(auditResult?.auditJson, auditResult?.audit);
   const userText = await buildRewriteUserText(inputText, norma, nivel, auditReport, sessionContext);
-  const optimizedRaw = await callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, { maxTokens: LLM_MAX_TOKENS_REWRITE });
+  const { content: optimizedRaw, modelUsed } = await callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, { maxTokens: LLM_MAX_TOKENS_REWRITE });
   const allowedCitations = await buildAllowedCitationsForIntegrity(inputText, sessionContext);
   const integrityResult = verifyRewriteIntegrity(inputText, optimizedRaw, { allowedCitations });
 
   return {
     optimizedText: integrityResult.sanitizedOptimized,
+    modelUsed,
     integrity: {
       ok: integrityResult.ok,
       citas_perdidas: integrityResult.citas_perdidas,
@@ -1231,6 +1232,7 @@ const chapterCreateSchema = Joi.object({
   headingLevel: Joi.number().integer().valid(0, 1, 2).optional(),
   isChapterStart: Joi.boolean().optional(),
   chapterTitle: Joi.string().trim().max(120).allow('').optional(),
+  modelUsed: Joi.string().trim().max(120).allow('').optional(),
   norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),
   nivel: Joi.string().valid(...NIVEL_OPTIONS).optional(),
 }).options({ stripUnknown: true });
@@ -1766,6 +1768,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         redirect: false,
         stage: 'audit',
         ...buildAuditApiPayload(auditResult),
+        modelUsed: auditResult.modelUsed || getLlmModel(),
         norma,
         nivel,
         sessionId: value.sessionId || null,
@@ -1810,6 +1813,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         stage: 'rewrite',
         optimizedText: rewriteResult.optimizedText,
         integrity: rewriteResult.integrity,
+        modelUsed: rewriteResult.modelUsed || getLlmModel(),
         norma,
         nivel,
         sessionId: value.sessionId || null,
@@ -1837,6 +1841,8 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       ...buildAuditApiPayload(auditResult),
       optimizedText: rewriteResult.optimizedText,
       integrity: rewriteResult.integrity,
+      modelUsed: rewriteResult.modelUsed || getLlmModel(),
+      auditModelUsed: auditResult.modelUsed || getLlmModel(),
       original: inputText,
       suggested: rewriteResult.optimizedText,
       suggestion: auditResult.audit,
