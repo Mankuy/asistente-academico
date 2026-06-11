@@ -402,6 +402,49 @@
             margin: 0.35rem 0;
             color: var(--muted);
         }
+        .suggestion-quote-clickable {
+            cursor: pointer;
+            border-radius: 0.25rem;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .suggestion-quote-clickable:hover {
+            background: rgba(13, 110, 253, 0.08);
+            border-left-color: var(--accent);
+        }
+        .dark-theme .suggestion-quote-clickable:hover {
+            background: rgba(0, 210, 255, 0.1);
+        }
+        .quote-flash {
+            background: rgba(255, 213, 79, 0.45);
+            transition: background 1.2s ease;
+            border-radius: 3px;
+        }
+        .quote-flash.quote-flash-fade {
+            background: transparent;
+        }
+        .dark-theme .quote-flash {
+            background: rgba(255, 213, 79, 0.28);
+        }
+        .original-source-panel {
+            margin-bottom: 0.85rem;
+            padding: 0.65rem 0.75rem;
+            border: 1px dashed var(--border);
+            border-radius: 0.4rem;
+            background: var(--badge-bg);
+        }
+        .original-source-panel h4 {
+            margin: 0 0 0.45rem;
+            font-size: 0.78rem;
+            color: var(--muted);
+        }
+        .original-source-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.82rem;
+            line-height: 1.5;
+            max-height: 220px;
+            overflow-y: auto;
+        }
         .suggestion-field {
             font-size: 0.8rem;
             margin: 0.25rem 0;
@@ -2280,6 +2323,179 @@
             return map[veredicto] || veredicto;
         }
 
+        function normalizeQuoteMatchTextClient(text) {
+            return String(text || '')
+                .normalize('NFD')
+                .replace(/\p{M}/gu, '')
+                .replace(/[\u2018\u2019\u201C\u201D«»]/g, '"')
+                .replace(/[\u2013\u2014]/g, '-')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+        }
+
+        function normalizeQuoteCharClient(ch) {
+            return String(ch || '')
+                .normalize('NFD')
+                .replace(/\p{M}/gu, '')
+                .replace(/[\u2018\u2019\u201C\u201D«»]/g, '"')
+                .replace(/[\u2013\u2014]/g, '-')
+                .toLowerCase();
+        }
+
+        function buildNormalizedWithMapClient(rawText) {
+            const raw = String(rawText || '');
+            const normChars = [];
+            const normToRaw = [];
+            let pendingSpaceStart = null;
+            let i = 0;
+
+            const flushSpace = () => {
+                if (pendingSpaceStart !== null && normChars.length > 0) {
+                    normChars.push(' ');
+                    normToRaw.push(pendingSpaceStart);
+                    pendingSpaceStart = null;
+                }
+            };
+
+            while (i < raw.length) {
+                if (/\s/u.test(raw[i])) {
+                    if (pendingSpaceStart === null && normChars.length > 0) pendingSpaceStart = i;
+                    while (i < raw.length && /\s/u.test(raw[i])) i += 1;
+                    flushSpace();
+                    continue;
+                }
+
+                pendingSpaceStart = null;
+                const rawIdx = i;
+                const chunk = normalizeQuoteCharClient(raw[i]);
+                i += 1;
+
+                for (const c of chunk) {
+                    normChars.push(c);
+                    normToRaw.push(rawIdx);
+                }
+            }
+
+            while (normChars.length && normChars[0] === ' ') {
+                normChars.shift();
+                normToRaw.shift();
+            }
+            while (normChars.length && normChars[normChars.length - 1] === ' ') {
+                normChars.pop();
+                normToRaw.pop();
+            }
+
+            return { normalized: normChars.join(''), normToRaw };
+        }
+
+        function findQuoteRange(sourceText, quote) {
+            const rawQuote = sanitizeZeroWidthClient(quote || '').trim();
+            if (!rawQuote || rawQuote === '(fragmento no citado)') return null;
+
+            const raw = String(sourceText || '');
+            const exact = raw.indexOf(rawQuote);
+            if (exact !== -1) {
+                return { start: exact, end: exact + rawQuote.length };
+            }
+
+            const { normalized: normSrc, normToRaw } = buildNormalizedWithMapClient(raw);
+            const normQuote = normalizeQuoteMatchTextClient(rawQuote);
+            if (normQuote.length <= 2) return null;
+
+            const normIdx = normSrc.indexOf(normQuote);
+            if (normIdx === -1) return null;
+
+            const start = normToRaw[normIdx];
+            for (let end = start + 1; end <= raw.length; end += 1) {
+                const sliceNorm = buildNormalizedWithMapClient(raw.slice(start, end)).normalized;
+                if (sliceNorm === normQuote) {
+                    return { start, end };
+                }
+                if (sliceNorm.length > normQuote.length) break;
+            }
+
+            const fallbackEnd = (normToRaw[normIdx + normQuote.length - 1] ?? start) + 1;
+            return { start, end: fallbackEnd };
+        }
+
+        function getQuoteSourceCandidates() {
+            const candidates = [];
+            const editorText = editor.value || '';
+            const pendingText = pendingRewriteContext?.text || '';
+
+            if (activeChapterId && activeChapterId !== FULL_SESSION_VIEW_ID && activeSessionData?.chapters) {
+                const chapter = activeSessionData.chapters.find((item) => item.id === activeChapterId);
+                if (chapter?.originalText) {
+                    candidates.push({ mode: 'panel', text: chapter.originalText });
+                }
+            }
+
+            if (pendingText) {
+                candidates.push({ mode: 'editor', text: pendingText });
+            } else if (editorText) {
+                candidates.push({ mode: 'editor', text: editorText });
+            }
+
+            return candidates;
+        }
+
+        function jumpToQuoteInEditor(range) {
+            const text = editor.value || '';
+            editor.focus();
+            editor.setSelectionRange(range.start, range.end);
+            const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 20;
+            const linesBefore = text.slice(0, range.start).split('\n').length - 1;
+            editor.scrollTop = Math.max(0, (linesBefore * lineHeight) - (editor.clientHeight / 3));
+        }
+
+        function ensureOriginalSourcePanel(originalText) {
+            const host = learningPanel.querySelector('.analysis-result') || learningPanel;
+            let panel = document.getElementById('original-source-panel');
+            if (!panel) {
+                panel = document.createElement('section');
+                panel.id = 'original-source-panel';
+                panel.className = 'original-source-panel';
+                panel.innerHTML = `
+                    <h4>Tu texto original</h4>
+                    <div class="original-source-content"></div>`;
+                host.prepend(panel);
+            }
+            const contentEl = panel.querySelector('.original-source-content');
+            contentEl.dataset.fullText = originalText;
+            contentEl.textContent = originalText;
+            return contentEl;
+        }
+
+        function flashQuoteInPanel(fullText, range) {
+            const contentEl = ensureOriginalSourcePanel(fullText);
+            const before = escapeHtml(fullText.slice(0, range.start));
+            const mid = escapeHtml(fullText.slice(range.start, range.end));
+            const after = escapeHtml(fullText.slice(range.end));
+            contentEl.innerHTML = `${before}<mark class="quote-flash">${mid}</mark>${after}`;
+            const mark = contentEl.querySelector('mark.quote-flash');
+            mark?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            window.setTimeout(() => mark?.classList.add('quote-flash-fade'), 120);
+            window.setTimeout(() => {
+                contentEl.textContent = fullText;
+            }, 2500);
+        }
+
+        function jumpToQuote(quote) {
+            const candidates = getQuoteSourceCandidates();
+            for (const candidate of candidates) {
+                const range = findQuoteRange(candidate.text, quote);
+                if (!range) continue;
+                if (candidate.mode === 'editor') {
+                    jumpToQuoteInEditor(range);
+                    return;
+                }
+                flashQuoteInPanel(candidate.text, range);
+                return;
+            }
+            showToast('El fragmento citado no se encontró textualmente en tu texto.', true);
+        }
+
         function buildSuggestionCardHtml(item, state) {
             if (item.quote_verified === false) {
                 return `
@@ -2304,7 +2520,7 @@
                             <button type="button" class="btn-suggestion btn-reject ${!accepted ? 'active-reject' : ''}" data-action="reject" data-id="${escapeAttr(item.id)}">✕ Rechazar</button>
                         </div>
                     </div>
-                    <blockquote class="suggestion-quote">"${escapeHtml(item.quote)}"</blockquote>
+                    <blockquote class="suggestion-quote suggestion-quote-clickable" data-quote-jump="${escapeAttr(item.quote)}" title="📍 Ver en tu texto">"${escapeHtml(item.quote)}"</blockquote>
                     <p class="suggestion-field"><strong>Propuesta:</strong> ${escapeHtml(item.replacement)}</p>
                     <p class="suggestion-field">${escapeHtml(item.explanation)}</p>
                     <p class="suggestion-field"><em>${escapeHtml(item.norm_ref)}</em></p>
@@ -2330,6 +2546,13 @@
                     card.classList.toggle('rejected', action === 'reject');
                     card.querySelector('.btn-accept')?.classList.toggle('active-accept', action === 'accept');
                     card.querySelector('.btn-reject')?.classList.toggle('active-reject', action === 'reject');
+                });
+            });
+
+            learningPanel.querySelectorAll('.suggestion-quote-clickable[data-quote-jump]').forEach((quoteEl) => {
+                quoteEl.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    jumpToQuote(quoteEl.dataset.quoteJump || '');
                 });
             });
         }
@@ -3316,6 +3539,78 @@
             });
         }
 
+        function getPdfTextItemMetrics(item) {
+            const transform = item.transform || [];
+            const str = String(item.str || '');
+            const fontSize = Math.abs(transform[3]) || Math.abs(transform[0]) || 12;
+            return {
+                str,
+                x: transform[4] ?? 0,
+                y: transform[5] ?? 0,
+                width: Number(item.width) || (str.length * fontSize * 0.45),
+                fontSize,
+                hasEOL: Boolean(item.hasEOL),
+            };
+        }
+
+        function reconstructPdfPageText(items) {
+            const enriched = (items || [])
+                .map(getPdfTextItemMetrics)
+                .filter((item) => item.str);
+
+            if (!enriched.length) return '';
+
+            enriched.sort((a, b) => {
+                if (Math.abs(a.y - b.y) > 2) return b.y - a.y;
+                return a.x - b.x;
+            });
+
+            let result = '';
+            let prev = null;
+            let prevLineHeight = enriched[0].fontSize || 12;
+
+            for (const item of enriched) {
+                if (!prev) {
+                    result += item.str;
+                    if (item.hasEOL) result += '\n';
+                    prev = item;
+                    prevLineHeight = item.fontSize || prevLineHeight;
+                    continue;
+                }
+
+                const dy = Math.abs(item.y - prev.y);
+                const sameLine = dy <= 2;
+
+                if (!sameLine) {
+                    const lineGap = dy;
+                    if (lineGap > prevLineHeight * 1.8) {
+                        result += '\n\n';
+                    } else {
+                        result += '\n';
+                    }
+                    result += item.str;
+                } else {
+                    const avgCharWidth = prev.str.length
+                        ? prev.width / prev.str.length
+                        : (prev.fontSize * 0.45);
+                    const gap = item.x - (prev.x + prev.width);
+                    if (gap > avgCharWidth * 0.25) {
+                        result += ' ';
+                    }
+                    result += item.str;
+                }
+
+                if (item.hasEOL) {
+                    result += '\n';
+                }
+
+                prev = item;
+                prevLineHeight = item.fontSize || prevLineHeight;
+            }
+
+            return result.replace(/ {3,}/g, ' ');
+        }
+
         async function extractPdfText(arrayBuffer) {
             if (typeof pdfjsLib === 'undefined') {
                 throw new Error('PDF.js no está disponible. Verificá tu conexión a internet.');
@@ -3328,11 +3623,10 @@
             for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
                 const page = await pdf.getPage(pageNum);
                 const content = await page.getTextContent();
-                const pageText = content.items.map((item) => item.str).join(' ');
-                parts.push(pageText);
+                parts.push(reconstructPdfPageText(content.items));
             }
 
-            return parts.join('\n\n').trim();
+            return parts.join('\n\n').replace(/ {3,}/g, ' ').trim();
         }
 
         async function extractDocxText(arrayBuffer) {

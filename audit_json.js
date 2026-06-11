@@ -50,6 +50,94 @@ function normalizeQuoteMatchText(text) {
     .toLowerCase();
 }
 
+function normalizeQuoteChar(ch) {
+  return String(ch || '')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[\u2018\u2019\u201C\u201D«»]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .toLowerCase();
+}
+
+function buildNormalizedWithMap(rawText) {
+  const raw = String(rawText || '');
+  const normChars = [];
+  const normToRaw = [];
+  let pendingSpaceStart = null;
+  let i = 0;
+
+  const flushSpace = () => {
+    if (pendingSpaceStart !== null && normChars.length > 0) {
+      normChars.push(' ');
+      normToRaw.push(pendingSpaceStart);
+      pendingSpaceStart = null;
+    }
+  };
+
+  while (i < raw.length) {
+    if (/\s/u.test(raw[i])) {
+      if (pendingSpaceStart === null && normChars.length > 0) pendingSpaceStart = i;
+      while (i < raw.length && /\s/u.test(raw[i])) i += 1;
+      flushSpace();
+      continue;
+    }
+
+    pendingSpaceStart = null;
+    const rawIdx = i;
+    const chunk = normalizeQuoteChar(raw[i]);
+    i += 1;
+
+    for (const c of chunk) {
+      normChars.push(c);
+      normToRaw.push(rawIdx);
+    }
+  }
+
+  while (normChars.length && normChars[0] === ' ') {
+    normChars.shift();
+    normToRaw.shift();
+  }
+  while (normChars.length && normChars[normChars.length - 1] === ' ') {
+    normChars.pop();
+    normToRaw.pop();
+  }
+
+  return {
+    normalized: normChars.join(''),
+    normToRaw,
+  };
+}
+
+function findQuoteRange(sourceText, quote) {
+  const rawQuote = sanitizeZeroWidth(quote || '').trim();
+  if (!rawQuote || rawQuote === '(fragmento no citado)') return null;
+
+  const raw = String(sourceText || '');
+  const exact = raw.indexOf(rawQuote);
+  if (exact !== -1) {
+    return { start: exact, end: exact + rawQuote.length };
+  }
+
+  const { normalized: normSrc, normToRaw } = buildNormalizedWithMap(raw);
+  const normQuote = normalizeQuoteMatchText(rawQuote);
+  if (normQuote.length <= 2) return null;
+
+  const normIdx = normSrc.indexOf(normQuote);
+  if (normIdx === -1) return null;
+
+  const start = normToRaw[normIdx];
+  for (let end = start + 1; end <= raw.length; end += 1) {
+    const sliceNorm = buildNormalizedWithMap(raw.slice(start, end)).normalized;
+    if (sliceNorm === normQuote) {
+      return { start, end };
+    }
+    if (sliceNorm.length > normQuote.length) break;
+  }
+
+  const fallbackEnd = (normToRaw[normIdx + normQuote.length - 1] ?? start) + 1;
+  return { start, end: fallbackEnd };
+}
+
 function quoteExistsInOriginal(quote, originalText) {
   const rawQuote = sanitizeZeroWidth(quote || '').trim();
   if (!rawQuote || rawQuote === '(fragmento no citado)') return false;
@@ -223,6 +311,8 @@ module.exports = {
   filterAcceptedSuggestions,
   normalizeAuditJson,
   quoteExistsInOriginal,
+  findQuoteRange,
+  buildNormalizedWithMap,
   verifyQuotesInAudit,
   normalizeQuoteMatchText,
 };

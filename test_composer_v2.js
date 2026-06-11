@@ -17,6 +17,7 @@ const {
 const {
   extractAuditJSON,
   quoteExistsInOriginal,
+  findQuoteRange,
   filterAcceptedSuggestions,
 } = require('./audit_json');
 const {
@@ -124,6 +125,15 @@ function runTests() {
   }), original);
   assert.strictEqual(fakeQuoteAudit.auditJson.sugerencias[0].quote_verified, false);
   assert.strictEqual(quoteExistsInOriginal('(García, 2019)', original), true);
+
+  const exactRange = findQuoteRange(original, '(García, 2019)');
+  assert.strictEqual(exactRange.start, original.indexOf('(García, 2019)'));
+
+  const accentSource = 'Según García (2019), el marco es claro.';
+  const normRange = findQuoteRange(accentSource, 'García (2019)');
+  assert.ok(normRange && accentSource.slice(normRange.start, normRange.end).includes('García'));
+
+  assert.strictEqual(findQuoteRange('texto sin cita', 'inexistente'), null);
 
   const filtered = filterAcceptedSuggestions(audit.auditJson, ['s1']);
   assert.strictEqual(filtered.sugerencias.length, 1);
