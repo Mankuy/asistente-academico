@@ -882,7 +882,7 @@ function classifyIntent(text) {
   return classifyIntentRegex(text);
 }
 
-async function classifyIntentLLM(text) {
+async function classifyIntentLLM(text, guardianModel = null) {
   const snippet = String(text || '').trim().slice(0, 600);
   if (!snippet) return 'unknown';
 
@@ -893,9 +893,11 @@ async function classifyIntentLLM(text) {
     }
   }
 
+  const model = String(guardianModel || '').trim() || getLlmFastModel();
+
   try {
     const { content: raw } = await callLlmOnce(GUARDIAN_SYSTEM_PROMPT, snippet, {
-      model: getLlmFastModel(),
+      model,
       maxTokens: 20,
       temperature: 0,
     });
@@ -906,12 +908,12 @@ async function classifyIntentLLM(text) {
   }
 }
 
-async function containsEvasionIntent(text) {
+async function containsEvasionIntent(text, guardianModel = null) {
   const regexIntent = classifyIntentRegex(text);
   if (regexIntent === 'evasion') return true;
   if (regexIntent === 'academic_help') return false;
 
-  const llmIntent = await classifyIntentLLM(text);
+  const llmIntent = await classifyIntentLLM(text, guardianModel);
   return llmIntent === 'evasion';
 }
 
@@ -1208,6 +1210,7 @@ const suggestSchema = Joi.object({
   acceptedSuggestions: Joi.array().items(Joi.string().trim()).optional(),
   sessionId: Joi.string().uuid().optional(),
   costConfirmed: Joi.boolean().optional(),
+  guardianModel: Joi.string().trim().max(300).allow('').optional(),
 }).options({ stripUnknown: true });
 
 const sessionCreateSchema = Joi.object({
@@ -1706,6 +1709,9 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     let nivel = value.nivel || 'Trabajo de Grado';
     const stage = value.stage || 'full';
     const provider = getLlmProvider(getLlmProviderId());
+    const mainModel = getLlmModel();
+    const guardianModel = String(value.guardianModel || '').trim() || getLlmFastModel();
+    console.log(`[api/suggest] Proveedor LLM: ${provider.label} · Modelo Principal: ${mainModel || '(sin configurar)'} · Guardián: ${guardianModel || '(fallback al principal)'}`);
 
     let sessionContext = null;
     if (value.sessionId) {
@@ -1724,7 +1730,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       }
     }
 
-    if (await containsEvasionIntent(inputText)) {
+    if (await containsEvasionIntent(inputText, guardianModel)) {
       console.log('[api/suggest] Intención de evasión bloqueada (guardián)');
       return res.json({
         redirect: true,
