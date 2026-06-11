@@ -1523,6 +1523,7 @@
             costAccum: 0,
         };
         let thesisResumeState = null;
+        let thesisAbortController = null;
         const normaSelect = document.getElementById('norma-select');
         const nivelSelect = document.getElementById('nivel-select');
         const themeBtn = document.getElementById('theme-btn');
@@ -2508,7 +2509,7 @@
             return new Promise((resolve) => setTimeout(resolve, ms));
         }
 
-        async function postSuggestStage(payload) {
+        async function postSuggestStage(payload, fetchOptions = {}) {
             const requestPayload = {
                 ...payload,
                 guardianModel: payload.guardianModel || getGuardianModelForRequest(),
@@ -2517,6 +2518,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestPayload),
+                signal: fetchOptions.signal,
             });
             const data = await response.json().catch(() => ({}));
             return { response, data };
@@ -2541,21 +2543,38 @@
             return Math.min(1500 * (2 ** (attempt - 1)), 60000);
         }
 
-        async function postSuggestStageWithRetry(payload, phaseLabel) {
+        async function postSuggestStageWithRetry(payload, phaseLabel, fetchOptions = {}) {
+            let lastResult = null;
             for (let attempt = 1; attempt <= CLIENT_RETRY_MAX; attempt++) {
-                const result = await postSuggestStage(payload);
-                if (result.response.ok) return result;
+                assertThesisNotCancelled();
+                try {
+                    lastResult = await postSuggestStage(payload, fetchOptions);
+                    if (lastResult.response.ok) return lastResult;
 
-                const retryable = isRetryableApiData(result.data, result.response.status);
-                if (!retryable || attempt >= CLIENT_RETRY_MAX) return result;
+                    const retryable = isRetryableApiData(lastResult.data, lastResult.response.status);
+                    if (!retryable || attempt >= CLIENT_RETRY_MAX) return lastResult;
+                } catch (error) {
+                    if (isThesisCancelledError(error)) throw createThesisCancelledError();
+                    throw error;
+                }
 
-                const waitMs = getRetryWaitMs(result.data, attempt);
+                const waitMs = getRetryWaitMs(lastResult.data, attempt);
                 const waitSec = Math.max(1, Math.ceil(waitMs / 1000));
 
                 await new Promise((resolve) => {
                     let remaining = waitSec;
                     const tick = () => {
-                        showLoading(`${phaseLabel} — proveedor ocupado. Reintento automático en ${remaining}s…`, true);
+                        if (thesisJob.running && thesisJob.cancelled) {
+                            clearRetryCountdown();
+                            resolve();
+                            return;
+                        }
+                        const retryMessage = `${phaseLabel} — proveedor ocupado. Reintento automático en ${remaining}s…`;
+                        if (thesisJob.running) {
+                            showThesisProgress(retryMessage);
+                        } else {
+                            showLoading(retryMessage, true);
+                        }
                         remaining -= 1;
                         if (remaining < 0) {
                             clearRetryCountdown();
@@ -2566,9 +2585,10 @@
                     tick();
                     retryCountdownTimer = setInterval(tick, 1000);
                 });
+                assertThesisNotCancelled();
             }
 
-            return postSuggestStage(payload);
+            return postSuggestStage(payload, fetchOptions);
         }
 
         function formatApiError(response, data) {
@@ -3421,32 +3441,70 @@
                 .filter((chunk) => chunk.text);
         }
 
+        function createThesisCancelledError() {
+            const err = new Error('Modo Tesis cancelado por el usuario.');
+            err.name = 'ThesisCancelledError';
+            return err;
+        }
+
+        function assertThesisNotCancelled() {
+            if (thesisJob.cancelled) {
+                throw createThesisCancelledError();
+            }
+        }
+
+        function isThesisCancelledError(error) {
+            return thesisJob.cancelled
+                || error?.name === 'ThesisCancelledError'
+                || error?.name === 'AbortError';
+        }
+
+        function cancelThesisJob() {
+            thesisJob.cancelled = true;
+            thesisJob.paused = false;
+            if (thesisAbortController) {
+                thesisAbortController.abort();
+            }
+            showThesisProgress('Cancelando… interrumpiendo la solicitud en curso.');
+        }
+
+        function finishThesisCancellation() {
+            thesisResumeState = null;
+            thesisAbortController = null;
+            learningPanel.innerHTML = '<p>Modo Tesis cancelado. Los fragmentos ya procesados quedaron guardados.</p>';
+        }
+
         function showThesisProgress(message) {
             const pct = thesisJob.total
                 ? Math.round((thesisJob.current / thesisJob.total) * 100)
                 : 0;
+            const statusLine = thesisJob.cancelled
+                ? 'Cancelando…'
+                : (thesisJob.paused ? 'Pausado.' : message);
             learningPanel.innerHTML = `
                 <div class="thesis-progress">
                     <strong>Modo Tesis</strong>
-                    <p>${escapeHtml(message)}</p>
+                    <p>${escapeHtml(statusLine)}</p>
                     <p>Fragmento ${thesisJob.current} de ${thesisJob.total} · Costo acumulado estimado: USD ${thesisJob.costAccum.toFixed(4)}</p>
                     <div class="thesis-progress-bar"><div class="thesis-progress-fill" style="width:${pct}%"></div></div>
                     <div class="thesis-progress-actions">
-                        <button type="button" class="btn" id="thesis-pause-btn">${thesisJob.paused ? '▶ Reanudar' : '⏸ Pausar'}</button>
-                        <button type="button" class="btn" id="thesis-cancel-btn">✕ Cancelar</button>
+                        <button type="button" class="btn" id="thesis-pause-btn" ${thesisJob.cancelled ? 'disabled' : ''}>${thesisJob.paused ? '▶ Reanudar' : '⏸ Pausar'}</button>
+                        <button type="button" class="btn" id="thesis-cancel-btn" ${thesisJob.cancelled ? 'disabled' : ''}>✕ Cancelar</button>
                     </div>
                 </div>`;
 
             document.getElementById('thesis-pause-btn')?.addEventListener('click', () => {
+                if (thesisJob.cancelled) return;
                 thesisJob.paused = !thesisJob.paused;
                 showThesisProgress(thesisJob.paused ? 'Pausado.' : 'Reanudando…');
             });
             document.getElementById('thesis-cancel-btn')?.addEventListener('click', () => {
-                thesisJob.cancelled = true;
+                if (thesisJob.cancelled) return;
+                cancelThesisJob();
             });
         }
 
-        async function processThesisChunkAuto(chunk, sessionId, chunkIndex, total) {
+        async function processThesisChunkAuto(chunk, sessionId, chunkIndex, total, abortSignal = null) {
             const chunkText = typeof chunk === 'string' ? chunk : chunk.text;
             const chunkMeta = typeof chunk === 'string'
                 ? buildThesisChunkMeta(0, '', chunkText)
@@ -3455,15 +3513,26 @@
                     isChapterStart: Boolean(chunk.isChapterStart),
                     chapterTitle: chunk.chapterTitle || '',
                 };
+            const fetchOptions = abortSignal ? { signal: abortSignal } : {};
 
-            const estimateResp = await apiJson('/api/estimate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: chunkText, sessionId }),
-            });
-            if (estimateResp.response.ok) {
-                thesisJob.costAccum += Number(estimateResp.data.estimateUsd || 0);
+            assertThesisNotCancelled();
+
+            try {
+                const estimateResp = await apiJson('/api/estimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: chunkText, sessionId }),
+                    signal: abortSignal,
+                });
+                if (estimateResp.response.ok) {
+                    thesisJob.costAccum += Number(estimateResp.data.estimateUsd || 0);
+                }
+            } catch (error) {
+                if (isThesisCancelledError(error)) throw createThesisCancelledError();
+                throw error;
             }
+
+            assertThesisNotCancelled();
 
             const auditResp = await postSuggestStageWithRetry({
                 text: chunkText,
@@ -3472,7 +3541,7 @@
                 stage: 'audit',
                 sessionId,
                 costConfirmed: true,
-            }, `Tesis ${chunkIndex}/${total} · Fase 1`);
+            }, `Tesis ${chunkIndex}/${total} · Fase 1`, fetchOptions);
 
             if (!auditResp.response.ok) {
                 throw new Error(formatApiError(auditResp.response, auditResp.data));
@@ -3480,6 +3549,8 @@
             if (auditResp.data.redirect) {
                 throw new Error(auditResp.data.message || 'Bloqueo de intención en Modo Tesis.');
             }
+
+            assertThesisNotCancelled();
 
             const acceptedSuggestions = (auditResp.data.auditJson?.sugerencias || [])
                 .filter((s) => s.quote_verified !== false)
@@ -3493,31 +3564,39 @@
                 auditJson: auditResp.data.auditJson,
                 acceptedSuggestions,
                 sessionId,
-            }, `Tesis ${chunkIndex}/${total} · Fase 2`);
+            }, `Tesis ${chunkIndex}/${total} · Fase 2`, fetchOptions);
 
             if (!rewriteResp.response.ok) {
                 throw new Error(formatApiError(rewriteResp.response, rewriteResp.data));
             }
 
-            await apiJson(`/api/sessions/${sessionId}/chapters`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    originalText: chunkText,
-                    audit: auditResp.data.audit,
-                    auditJson: auditResp.data.auditJson,
-                    optimizedText: rewriteResp.data.optimizedText,
-                    title: chunkMeta.headingLevel > 0
-                        ? (chunkMeta.chapterTitle || (chunkMeta.headingLevel === 1 ? `Capítulo ${chunkIndex}` : `Subtítulo ${chunkIndex}`))
-                        : undefined,
-                    headingLevel: chunkMeta.headingLevel,
-                    isChapterStart: chunkMeta.headingLevel === 1,
-                    chapterTitle: chunkMeta.headingLevel > 0 ? chunkMeta.chapterTitle : '',
-                    modelUsed: rewriteResp.data.modelUsed || null,
-                    norma: normaSelect.value,
-                    nivel: nivelSelect.value,
-                }),
-            });
+            assertThesisNotCancelled();
+
+            try {
+                await apiJson(`/api/sessions/${sessionId}/chapters`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        originalText: chunkText,
+                        audit: auditResp.data.audit,
+                        auditJson: auditResp.data.auditJson,
+                        optimizedText: rewriteResp.data.optimizedText,
+                        title: chunkMeta.headingLevel > 0
+                            ? (chunkMeta.chapterTitle || (chunkMeta.headingLevel === 1 ? `Capítulo ${chunkIndex}` : `Subtítulo ${chunkIndex}`))
+                            : undefined,
+                        headingLevel: chunkMeta.headingLevel,
+                        isChapterStart: chunkMeta.headingLevel === 1,
+                        chapterTitle: chunkMeta.headingLevel > 0 ? chunkMeta.chapterTitle : '',
+                        modelUsed: rewriteResp.data.modelUsed || null,
+                        norma: normaSelect.value,
+                        nivel: nivelSelect.value,
+                    }),
+                    signal: abortSignal,
+                });
+            } catch (error) {
+                if (isThesisCancelledError(error)) throw createThesisCancelledError();
+                throw error;
+            }
         }
 
         async function processThesisChunksFromIndex(startIndex = 0) {
@@ -3530,6 +3609,7 @@
             thesisJob.total = chunks.length;
             thesisBtn.disabled = true;
             skipAutoAnalyze = true;
+            thesisAbortController = new AbortController();
 
             try {
                 setActiveSession(sessionId);
@@ -3547,21 +3627,32 @@
 
                     thesisJob.current = i + 1;
                     showThesisProgress(`Procesando fragmento ${i + 1} de ${chunks.length}…`);
-                    await processThesisChunkAuto(chunks[i], sessionId, i + 1, chunks.length);
+                    await processThesisChunkAuto(
+                        chunks[i],
+                        sessionId,
+                        i + 1,
+                        chunks.length,
+                        thesisAbortController.signal
+                    );
+                    if (thesisJob.cancelled) break;
                     await loadSessionDetails(sessionId);
                     await refreshSessionsList(sessionId);
                 }
 
                 if (thesisJob.cancelled) {
-                    thesisResumeState = null;
-                    learningPanel.innerHTML = '<p>Modo Tesis cancelado. Los fragmentos ya procesados quedaron guardados.</p>';
+                    finishThesisCancellation();
                     return;
                 }
 
                 thesisResumeState = null;
+                thesisAbortController = null;
                 activeChapterId = FULL_SESSION_VIEW_ID;
                 showFullSessionOptimized(activeSessionData.chapters);
             } catch (error) {
+                if (isThesisCancelledError(error)) {
+                    finishThesisCancellation();
+                    return;
+                }
                 console.error('Modo Tesis error:', error);
                 const failedAt = (thesisResumeState?.chunkIndex ?? startIndex) + 1;
                 const total = thesisResumeState?.chunks?.length || thesisJob.total;
@@ -3576,6 +3667,9 @@
                 thesisJob.running = false;
                 thesisBtn.disabled = false;
                 skipAutoAnalyze = false;
+                if (!thesisJob.cancelled) {
+                    thesisAbortController = null;
+                }
             }
         }
 
@@ -3589,6 +3683,7 @@
             const resumeIndex = Math.max(0, Number(thesisResumeState.chunkIndex) || 0);
             thesisJob.paused = false;
             thesisJob.cancelled = false;
+            thesisAbortController = null;
             showThesisProgress(`Reintentando fragmento ${resumeIndex + 1} de ${thesisResumeState.chunks.length}…`);
 
             try {
