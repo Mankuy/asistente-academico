@@ -752,6 +752,62 @@
             flex-direction: column;
             gap: 0.5rem;
         }
+        #learning-aside {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .learning-aside-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            flex-shrink: 0;
+        }
+        .learning-aside-header h2 {
+            font-size: 1.1rem;
+            margin: 0;
+        }
+        .learning-panel-toggle {
+            background: var(--badge-bg);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+            width: 2rem;
+            height: 2rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+            color: var(--text-primary);
+            flex-shrink: 0;
+        }
+        .learning-panel-toggle:hover {
+            background: var(--badge-hover);
+            border-color: var(--accent);
+        }
+        .learning-panel-toggle[aria-pressed="true"] {
+            background: var(--accent-ring);
+            border-color: var(--accent);
+        }
+        #learning-panel {
+            flex: 1;
+            min-height: 0;
+        }
+        main.learning-maximized #sessions-aside,
+        main.learning-maximized #resizer-sessions,
+        main.learning-maximized > section,
+        main.learning-maximized #resizer-editor {
+            display: none !important;
+        }
+        main.learning-maximized #learning-aside {
+            flex: 1 1 100% !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: none !important;
+        }
         .sessions-header {
             display: flex;
             align-items: center;
@@ -1452,7 +1508,10 @@
     </section>
     <div id="resizer-editor" class="resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar editor y panel de aprendizaje"></div>
     <aside id="learning-aside">
-        <h2 style="margin-bottom:0.5rem; font-size:1.1rem;">Panel de aprendizaje</h2>
+        <div class="learning-aside-header">
+            <h2>Panel de aprendizaje</h2>
+            <button type="button" id="learning-maximize-btn" class="learning-panel-toggle" title="Maximizar panel" aria-label="Maximizar panel de aprendizaje" aria-pressed="false">⛶</button>
+        </div>
         <div id="usage-meter" class="usage-meter hidden" aria-live="polite"></div>
         <div id="learning-panel">
             <p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>
@@ -1576,10 +1635,12 @@
         const editorSection = mainEl.querySelector('section');
         const sessionsAside = document.getElementById('sessions-aside');
         const learningAside = document.getElementById('learning-aside');
+        const learningMaximizeBtn = document.getElementById('learning-maximize-btn');
         const resizerSessions = document.getElementById('resizer-sessions');
         const resizerEditor = document.getElementById('resizer-editor');
         let debounceTimer = null;
         let activeResizer = null;
+        let learningMaximized = false;
         const THEME_KEY = 'academic-theme';
         const SESSIONS_WIDTH_KEY = 'academic-sessions-width';
         const EDITOR_WIDTH_KEY = 'academic-editor-width';
@@ -3527,8 +3588,13 @@
             if (event.target === settingsOverlay) closeSettings();
         });
         document.addEventListener('keydown', function (event) {
-            if (event.key === 'Escape' && settingsOverlay.classList.contains('open')) {
+            if (event.key !== 'Escape') return;
+            if (settingsOverlay.classList.contains('open')) {
                 closeSettings();
+                return;
+            }
+            if (learningMaximized) {
+                setLearningMaximized(false);
             }
         });
 
@@ -4285,7 +4351,7 @@
         }
 
         function startResize(which, event) {
-            if (window.innerWidth <= 768) return;
+            if (learningMaximized || window.innerWidth <= 768) return;
 
             activeResizer = which;
             document.body.classList.add('resizing');
@@ -4344,6 +4410,7 @@
         }
 
         function initPanelLayout() {
+            if (learningMaximized) return;
             if (window.innerWidth <= 768) {
                 resetPanelFlex();
                 return;
@@ -4351,6 +4418,27 @@
 
             const saved = getSavedLayoutWidths();
             applyThreeColumnLayout(saved.sessionsWidth, saved.editorWidth);
+        }
+
+        function setLearningMaximized(maximized) {
+            learningMaximized = Boolean(maximized);
+            mainEl.classList.toggle('learning-maximized', learningMaximized);
+            if (learningMaximizeBtn) {
+                learningMaximizeBtn.textContent = learningMaximized ? '⊟' : '⛶';
+                learningMaximizeBtn.title = learningMaximized ? 'Restaurar vista' : 'Maximizar panel';
+                learningMaximizeBtn.setAttribute(
+                    'aria-label',
+                    learningMaximized ? 'Restaurar vista completa' : 'Maximizar panel de aprendizaje'
+                );
+                learningMaximizeBtn.setAttribute('aria-pressed', learningMaximized ? 'true' : 'false');
+            }
+            if (!learningMaximized) {
+                initPanelLayout();
+            }
+        }
+
+        function toggleLearningMaximized() {
+            setLearningMaximized(!learningMaximized);
         }
 
         function bindResizer(resizerEl, which) {
@@ -4365,11 +4453,15 @@
         initPanelLayout();
 
         themeBtn.addEventListener('click', toggleTheme);
+        if (learningMaximizeBtn) {
+            learningMaximizeBtn.addEventListener('click', toggleLearningMaximized);
+        }
         bindResizer(resizerSessions, 'sessions');
         bindResizer(resizerEditor, 'editor');
         document.addEventListener('pointermove', doResize);
         document.addEventListener('pointerup', stopResize);
         window.addEventListener('resize', function () {
+            if (learningMaximized) return;
             if (window.innerWidth <= 768) {
                 resetPanelFlex();
                 return;
