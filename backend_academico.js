@@ -19,6 +19,13 @@ const {
   parseGuardianJson,
   estimateCostUsd,
 } = require('./guardian');
+const {
+  AUDIT_JSON_SCHEMA_HINT,
+  sanitizeZeroWidth,
+  extractAuditJSON,
+  formatAuditForRewrite,
+  filterAcceptedSuggestions,
+} = require('./audit_json');
 
 const ENV_PATH = path.join(__dirname, '.env');
 
@@ -457,7 +464,19 @@ function buildProviderHeaders(providerId, apiKey) {
 const LLM_MAX_TOKENS_AUDIT = 8000;
 const LLM_MAX_TOKENS_REWRITE = 10000;
 
-function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens = LLM_MAX_TOKENS_REWRITE, temperature = 0.3) {
+function supportsJsonResponseFormat(providerId) {
+  return !['anthropic', 'cohere'].includes(providerId);
+}
+
+function buildLlmRequestBody(
+  providerId,
+  systemPrompt,
+  userText,
+  model,
+  maxTokens = LLM_MAX_TOKENS_REWRITE,
+  temperature = 0.3,
+  jsonMode = false
+) {
   if (providerId === 'anthropic') {
     return {
       model,
@@ -480,7 +499,7 @@ function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxToken
     };
   }
 
-  return {
+  const body = {
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -489,6 +508,12 @@ function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxToken
     temperature,
     max_tokens: maxTokens,
   };
+
+  if (jsonMode && supportsJsonResponseFormat(providerId)) {
+    body.response_format = { type: 'json_object' };
+  }
+
+  return body;
 }
 
 function normalizeLlmCallOpts(opts = {}) {
@@ -571,6 +596,7 @@ async function callLlmOnce(systemPrompt, userText, opts = {}) {
   const callOpts = normalizeLlmCallOpts(opts);
   const maxTokens = callOpts.maxTokens ?? LLM_MAX_TOKENS_REWRITE;
   const temperature = callOpts.temperature ?? 0.3;
+  const jsonMode = Boolean(callOpts.jsonMode);
   const providerId = getLlmProviderId();
   const provider = getLlmProvider(providerId);
   const apiKey = getLlmApiKey();
@@ -599,7 +625,7 @@ async function callLlmOnce(systemPrompt, userText, opts = {}) {
     response = await fetch(endpoint, {
       method: 'POST',
       headers: buildProviderHeaders(providerId, apiKey),
-      body: JSON.stringify(buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens, temperature)),
+      body: JSON.stringify(buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens, temperature, jsonMode)),
       signal: AbortSignal.timeout(120000),
     });
   } catch (networkErr) {
@@ -731,6 +757,23 @@ Analiza el texto del usuario con rigor de revisor de comité editorial. NO reesc
 5. **Verificación bibliográfica**: contrasta citas in-text con el [Academic Context] de Crossref; señala discrepancias de autor, año, DOI o páginas.
 
 PROHIBIDO incluir "Texto Final Optimizado" o reescritura completa. Solo auditoría y sugerencias.
+`;
+
+const AUDIT_SYSTEM_PROMPT_JSON = SYSTEM_PROMPT_V3 + `
+
+**MODO: AUDITORÍA (Fase 1) — SALIDA JSON ESTRUCTURADA**
+
+Analiza el texto del usuario con rigor de revisor de comité editorial. NO reescribas el texto completo.
+
+**Respondé ÚNICAMENTE con un objeto JSON válido** (sin markdown, sin texto antes ni después) con esta forma exacta:
+${AUDIT_JSON_SCHEMA_HINT}
+
+Reglas:
+- "sugerencias" debe listar cada problema accionable con quote literal del texto original.
+- "severity" solo puede ser CRÍTICO, IMPORTANTE o MENOR.
+- "veredicto" solo puede ser apto, apto_con_reservas o no_apto.
+- Usá el [Academic Context] para "biblio_check" cuando haya citas verificables.
+- PROHIBIDO incluir reescritura completa del documento.
 `;
 
 const REWRITE_SYSTEM_PROMPT_V3 = SYSTEM_PROMPT_V3 + `
@@ -919,12 +962,29 @@ async function buildRewriteUserText(inputText, norma, nivel, auditReport, sessio
 
 async function runAuditStage(inputText, norma, nivel, sessionContext = null) {
   const contextualizedText = await buildContextualizedUserText(inputText, norma, nivel, sessionContext);
-  return callLlm(AUDIT_SYSTEM_PROMPT_V3, contextualizedText, { maxTokens: LLM_MAX_TOKENS_AUDIT });
+  const auditRaw = await callLlm(AUDIT_SYSTEM_PROMPT_JSON, contextualizedText, {
+    maxTokens: LLM_MAX_TOKENS_AUDIT,
+    jsonMode: true,
+  });
+  return extractAuditJSON(auditRaw);
 }
 
-async function runRewriteStage(inputText, norma, nivel, auditReport, sessionContext = null) {
+async function runRewriteStage(inputText, norma, nivel, auditResult, sessionContext = null) {
+  const auditReport = typeof auditResult === 'string'
+    ? auditResult
+    : formatAuditForRewrite(auditResult?.auditJson, auditResult?.audit);
   const userText = await buildRewriteUserText(inputText, norma, nivel, auditReport, sessionContext);
-  return callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, { maxTokens: LLM_MAX_TOKENS_REWRITE });
+  const optimizedText = await callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, { maxTokens: LLM_MAX_TOKENS_REWRITE });
+  return sanitizeZeroWidth(optimizedText);
+}
+
+function buildAuditApiPayload(auditResult) {
+  return {
+    audit: auditResult.audit,
+    auditJson: auditResult.auditJson,
+    auditMode: auditResult.auditMode,
+    auditRaw: auditResult.auditRaw,
+  };
 }
 
 const configSaveSchema = Joi.object({
@@ -991,6 +1051,8 @@ const suggestSchema = Joi.object({
     }),
   stage: Joi.string().valid('audit', 'rewrite', 'full').optional(),
   audit: Joi.string().trim().min(1).max(5000000).optional(),
+  auditJson: Joi.object().optional(),
+  acceptedSuggestions: Joi.array().items(Joi.string().trim()).optional(),
   sessionId: Joi.string().uuid().optional(),
   costConfirmed: Joi.boolean().optional(),
 }).options({ stripUnknown: true });
@@ -1011,6 +1073,7 @@ const sessionUpdateSchema = Joi.object({
 const chapterCreateSchema = Joi.object({
   originalText: Joi.string().trim().min(1).max(5000000).required(),
   audit: Joi.string().trim().min(1).max(5000000).required(),
+  auditJson: Joi.object().allow(null).optional(),
   optimizedText: Joi.string().trim().min(1).max(5000000).required(),
   title: Joi.string().trim().max(120).allow('').optional(),
   norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),
@@ -1383,12 +1446,12 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     }
 
     if (stage === 'audit') {
-      console.log(`[api/suggest] Fase 1 (Auditoría) · ${provider.label} · ${getLlmModel()}`);
-      const audit = await runAuditStage(inputText, norma, nivel, sessionContext);
+      console.log(`[api/suggest] Fase 1 (Auditoría JSON) · ${provider.label} · ${getLlmModel()}`);
+      const auditResult = await runAuditStage(inputText, norma, nivel, sessionContext);
       return res.json({
         redirect: false,
         stage: 'audit',
-        audit,
+        ...buildAuditApiPayload(auditResult),
         norma,
         nivel,
         sessionId: value.sessionId || null,
@@ -1405,7 +1468,20 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         });
       }
       console.log(`[api/suggest] Fase 2 (Reescritura) · ${provider.label} · ${getLlmModel()}`);
-      const optimizedText = await runRewriteStage(inputText, norma, nivel, value.audit.trim(), sessionContext);
+      let auditResult = value.auditJson
+        ? { auditJson: value.auditJson, audit: value.audit.trim(), auditMode: 'json' }
+        : value.audit.trim();
+
+      if (value.auditJson && Array.isArray(value.acceptedSuggestions) && value.acceptedSuggestions.length) {
+        const filteredJson = filterAcceptedSuggestions(value.auditJson, value.acceptedSuggestions);
+        auditResult = {
+          auditJson: filteredJson,
+          audit: formatAuditForRewrite(filteredJson),
+          auditMode: 'json',
+        };
+      }
+
+      const optimizedText = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
       return res.json({
         redirect: false,
         stage: 'rewrite',
@@ -1419,23 +1495,23 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     }
 
     console.log(`[api/suggest] Análisis completo (2 etapas) · ${provider.label} · ${getLlmModel()}`);
-    const audit = await runAuditStage(inputText, norma, nivel, sessionContext);
-    const optimizedText = await runRewriteStage(inputText, norma, nivel, audit, sessionContext);
+    const auditResult = await runAuditStage(inputText, norma, nivel, sessionContext);
+    const optimizedText = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
 
     return res.json({
       redirect: false,
       stage: 'full',
-      audit,
+      ...buildAuditApiPayload(auditResult),
       optimizedText,
       original: inputText,
       suggested: optimizedText,
-      suggestion: audit,
+      suggestion: auditResult.audit,
       norma,
       nivel,
       sessionId: value.sessionId || null,
       provider: getLlmProviderId(),
       providerLabel: provider.label,
-      explanation: 'Análisis en dos etapas (Auditoría + Reescritura) con System Prompt v3.0.',
+      explanation: 'Análisis en dos etapas (Auditoría JSON + Reescritura) con System Prompt v3.0.',
     });
   } catch (err) {
     if (err instanceof ApiError) {
@@ -1502,6 +1578,8 @@ module.exports = {
   searchAcademicData,
   extractCitationQueries,
   buildSessionContextBlock,
+  extractAuditJSON,
+  sanitizeZeroWidth,
   classifyIntent,
   classifyIntentLLM,
   containsEvasionIntent,

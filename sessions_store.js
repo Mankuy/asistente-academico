@@ -138,6 +138,7 @@ function addChapter(sessionId, payload = {}) {
     title: sanitizeLine(payload.title) || deriveTitleFromText(originalText, CHAPTER_TITLE_MAX) || `Capítulo ${chapterIndex}`,
     originalText,
     audit,
+    auditJson: payload.auditJson && typeof payload.auditJson === 'object' ? payload.auditJson : null,
     optimizedText,
     norma: payload.norma || session.norma,
     nivel: payload.nivel || session.nivel,

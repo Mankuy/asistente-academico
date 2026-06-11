@@ -335,6 +335,87 @@
         .optimized-section .analysis-content {
             max-height: 320px;
         }
+        .audit-summary {
+            font-size: 0.85rem;
+            margin-bottom: 0.75rem;
+            line-height: 1.5;
+        }
+        .veredicto-badge {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 0.15rem 0.45rem;
+            border-radius: 999px;
+            margin-left: 0.35rem;
+            text-transform: uppercase;
+        }
+        .veredicto-badge.apto { background: rgba(25, 135, 84, 0.15); color: var(--status-ok); }
+        .veredicto-badge.apto_con_reservas { background: rgba(180, 83, 9, 0.15); color: var(--status-warn); }
+        .veredicto-badge.no_apto { background: rgba(220, 53, 69, 0.15); color: var(--error-text); }
+        .suggestion-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+            max-height: 360px;
+            overflow-y: auto;
+        }
+        .suggestion-card {
+            border: 1px solid var(--border);
+            border-radius: 0.45rem;
+            padding: 0.6rem;
+            background: var(--bg-surface);
+        }
+        .suggestion-card.accepted { border-color: rgba(25, 135, 84, 0.45); }
+        .suggestion-card.rejected { opacity: 0.55; border-style: dashed; }
+        .suggestion-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.4rem;
+            flex-wrap: wrap;
+        }
+        .severity-badge {
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 0.12rem 0.4rem;
+            border-radius: 999px;
+        }
+        .severity-badge.CRÍTICO, .severity-badge.CRITICO { background: rgba(220, 53, 69, 0.15); color: var(--error-text); }
+        .severity-badge.IMPORTANTE { background: rgba(180, 83, 9, 0.15); color: var(--status-warn); }
+        .severity-badge.MENOR { background: var(--badge-bg); color: var(--muted); }
+        .suggestion-actions { display: flex; gap: 0.3rem; }
+        .btn-suggestion {
+            font-size: 0.72rem;
+            padding: 0.2rem 0.45rem;
+            border-radius: 0.3rem;
+            border: 1px solid var(--border);
+            background: var(--bg-primary);
+            cursor: pointer;
+        }
+        .btn-suggestion.active-accept { border-color: var(--status-ok); color: var(--status-ok); }
+        .btn-suggestion.active-reject { border-color: var(--error-text); color: var(--error-text); }
+        .suggestion-quote {
+            font-size: 0.8rem;
+            border-left: 3px solid var(--accent);
+            padding-left: 0.5rem;
+            margin: 0.35rem 0;
+            color: var(--muted);
+        }
+        .suggestion-field {
+            font-size: 0.8rem;
+            margin: 0.25rem 0;
+            line-height: 1.45;
+        }
+        .audit-checklist {
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            padding-left: 1rem;
+        }
+        .btn-optimize {
+            margin-top: 0.65rem;
+            width: 100%;
+        }
         .analysis-toolbar {
             display: flex;
             justify-content: flex-end;
@@ -1193,6 +1274,8 @@
         let sessionsIndex = [];
         let activeChapterId = null;
         let analysisInFlight = false;
+        let suggestionDecisions = {};
+        let pendingRewriteContext = null;
 
         const sessionsListEl = document.getElementById('sessions-list');
         const chaptersPanelEl = document.getElementById('chapters-panel');
@@ -1701,25 +1784,203 @@
             bindCopyButton(document.getElementById('copy-full-session-btn'), combinedText);
         }
 
-        function showDualAnalysis(audit, optimizedText, bannerHtml = '') {
+        function sanitizeZeroWidthClient(text) {
+            return String(text || '').replace(/[\u200B-\u200D\uFEFF\u2060\u180E\u00AD]/g, '');
+        }
+
+        function verdictLabel(veredicto) {
+            const map = {
+                apto: 'Apto',
+                apto_con_reservas: 'Apto con reservas',
+                no_apto: 'No apto',
+            };
+            return map[veredicto] || veredicto;
+        }
+
+        function buildSuggestionCardHtml(item, state) {
+            const accepted = state !== 'rejected';
+            const cardClass = state === 'rejected' ? 'rejected' : 'accepted';
+            return `
+                <article class="suggestion-card ${cardClass}" data-suggestion-id="${escapeAttr(item.id)}">
+                    <div class="suggestion-card-head">
+                        <span class="severity-badge ${escapeAttr(item.severity)}">${escapeHtml(item.severity)}</span>
+                        <div class="suggestion-actions">
+                            <button type="button" class="btn-suggestion btn-accept ${accepted ? 'active-accept' : ''}" data-action="accept" data-id="${escapeAttr(item.id)}">✓ Aceptar</button>
+                            <button type="button" class="btn-suggestion btn-reject ${!accepted ? 'active-reject' : ''}" data-action="reject" data-id="${escapeAttr(item.id)}">✕ Rechazar</button>
+                        </div>
+                    </div>
+                    <blockquote class="suggestion-quote">"${escapeHtml(item.quote)}"</blockquote>
+                    <p class="suggestion-field"><strong>Propuesta:</strong> ${escapeHtml(item.replacement)}</p>
+                    <p class="suggestion-field">${escapeHtml(item.explanation)}</p>
+                    <p class="suggestion-field"><em>${escapeHtml(item.norm_ref)}</em></p>
+                </article>`;
+        }
+
+        function getAcceptedSuggestionIds() {
+            if (!pendingRewriteContext?.auditJson?.sugerencias) return [];
+            return pendingRewriteContext.auditJson.sugerencias
+                .filter((item) => suggestionDecisions[item.id] !== 'rejected')
+                .map((item) => item.id);
+        }
+
+        function bindSuggestionCardEvents() {
+            learningPanel.querySelectorAll('.btn-suggestion').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const id = btn.dataset.id;
+                    const action = btn.dataset.action;
+                    suggestionDecisions[id] = action === 'accept' ? 'accepted' : 'rejected';
+                    const card = learningPanel.querySelector(`.suggestion-card[data-suggestion-id="${id}"]`);
+                    if (!card) return;
+                    card.classList.toggle('accepted', action === 'accept');
+                    card.classList.toggle('rejected', action === 'reject');
+                    card.querySelector('.btn-accept')?.classList.toggle('active-accept', action === 'accept');
+                    card.querySelector('.btn-reject')?.classList.toggle('active-reject', action === 'reject');
+                });
+            });
+        }
+
+        function showAuditReview(auditJson, auditProse, auditMode) {
+            if (!auditJson || auditMode !== 'json') {
+                learningPanel.innerHTML = `
+                    <section class="analysis-section audit-section">
+                        <h3>🔍 Auditoría (modo prosa)</h3>
+                        <div class="analysis-content">${escapeHtml(auditProse)}</div>
+                        <button type="button" class="btn btn-primary btn-optimize" id="run-rewrite-btn">✨ Optimizar texto (Fase 2)</button>
+                    </section>`;
+                document.getElementById('run-rewrite-btn')?.addEventListener('click', runRewriteFromReview);
+                return;
+            }
+
+            suggestionDecisions = {};
+            auditJson.sugerencias.forEach((item) => { suggestionDecisions[item.id] = 'accepted'; });
+
+            const cardsHtml = auditJson.sugerencias.map((item) => buildSuggestionCardHtml(item, 'accepted')).join('');
+            const checklistHtml = (auditJson.checklist || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+            const biblioHtml = (auditJson.biblio_check || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+
+            learningPanel.innerHTML = `
+                <section class="analysis-section audit-section">
+                    <h3>🔍 Auditoría estructurada</h3>
+                    <div class="audit-summary">
+                        ${escapeHtml(auditJson.resumen)}
+                        <span class="veredicto-badge ${escapeAttr(auditJson.veredicto)}">${escapeHtml(verdictLabel(auditJson.veredicto))}</span>
+                    </div>
+                    <div class="suggestion-cards" id="suggestion-cards">${cardsHtml || '<p>Sin sugerencias accionables.</p>'}</div>
+                    ${checklistHtml ? `<ul class="audit-checklist">${checklistHtml}</ul>` : ''}
+                    ${biblioHtml ? `<p class="suggestion-field"><strong>Biblio:</strong></p><ul class="audit-checklist">${biblioHtml}</ul>` : ''}
+                    <button type="button" class="btn btn-primary btn-optimize" id="run-rewrite-btn">✨ Optimizar con sugerencias aceptadas</button>
+                </section>`;
+
+            bindSuggestionCardEvents();
+            document.getElementById('run-rewrite-btn')?.addEventListener('click', runRewriteFromReview);
+        }
+
+        function showPedagogicalAnalysis(auditJson, auditProse, auditMode, optimizedText, bannerHtml = '') {
+            const cleanOptimized = sanitizeZeroWidthClient(optimizedText);
+            const auditSection = auditJson && auditMode === 'json'
+                ? (() => {
+                    const cardsHtml = auditJson.sugerencias.map((item) => {
+                        const state = suggestionDecisions[item.id] || 'accepted';
+                        return buildSuggestionCardHtml(item, state);
+                    }).join('');
+                    return `
+                    <section class="analysis-section audit-section">
+                        <h3>🔍 Auditoría estructurada</h3>
+                        <div class="audit-summary">
+                            ${escapeHtml(auditJson.resumen)}
+                            <span class="veredicto-badge ${escapeAttr(auditJson.veredicto)}">${escapeHtml(verdictLabel(auditJson.veredicto))}</span>
+                        </div>
+                        <div class="suggestion-cards">${cardsHtml}</div>
+                    </section>`;
+                })()
+                : `
+                    <section class="analysis-section audit-section">
+                        <h3>🔍 Auditoría y Sugerencias</h3>
+                        <div class="analysis-content">${escapeHtml(auditProse)}</div>
+                    </section>`;
+
             learningPanel.innerHTML = `
                 ${bannerHtml}
                 <div class="analysis-result">
-                    <section class="analysis-section audit-section">
-                        <h3>🔍 Auditoría y Sugerencias</h3>
-                        <div class="analysis-content" id="audit-content">${escapeHtml(audit)}</div>
-                    </section>
+                    ${auditSection}
                     <section class="analysis-section optimized-section">
                         <h3>✨ Texto Final Optimizado</h3>
                         <div class="analysis-toolbar">
                             <button type="button" class="btn-copy" id="copy-optimized-btn">Copiar al portapapeles</button>
                         </div>
-                        <div class="analysis-content" id="optimized-content">${escapeHtml(optimizedText)}</div>
+                        <div class="analysis-content" id="optimized-content">${escapeHtml(cleanOptimized)}</div>
                     </section>
                 </div>
             `;
 
-            bindCopyButton(document.getElementById('copy-optimized-btn'), optimizedText);
+            bindCopyButton(document.getElementById('copy-optimized-btn'), cleanOptimized);
+            if (auditJson && auditMode === 'json') bindSuggestionCardEvents();
+        }
+
+        function showDualAnalysis(audit, optimizedText, bannerHtml = '', auditJson = null, auditMode = 'prose') {
+            showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, bannerHtml);
+        }
+
+        async function runRewriteFromReview() {
+            if (!pendingRewriteContext) return;
+            analysisInFlight = true;
+            showLoading('Fase 2: Optimizando texto…', true);
+
+            try {
+                const ctx = pendingRewriteContext;
+                const rewritePayload = {
+                    text: ctx.text,
+                    norma: ctx.norma,
+                    nivel: ctx.nivel,
+                    stage: 'rewrite',
+                    audit: ctx.audit,
+                };
+                if (ctx.sessionId) rewritePayload.sessionId = ctx.sessionId;
+                if (ctx.auditJson) {
+                    rewritePayload.auditJson = ctx.auditJson;
+                    rewritePayload.acceptedSuggestions = getAcceptedSuggestionIds();
+                }
+                if (ctx.costConfirmed) rewritePayload.costConfirmed = true;
+
+                const rewriteResult = await postSuggestStageWithRetry(rewritePayload, 'Fase 2');
+                if (!rewriteResult.response.ok) {
+                    handleStageError(rewriteResult, 'Fase 2');
+                    return;
+                }
+
+                const optimizedText = rewriteResult.data.optimizedText;
+                if (!optimizedText) {
+                    showError('La fase de reescritura no devolvió texto optimizado.', { retryable: true });
+                    return;
+                }
+
+                await finalizeAnalysis(ctx.text, ctx.audit, ctx.auditJson, ctx.auditMode, optimizedText);
+            } catch (error) {
+                showError(error.message || 'No se pudo completar la optimización.', { retryable: true });
+            } finally {
+                analysisInFlight = false;
+                pendingRewriteContext = null;
+            }
+        }
+
+        async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText) {
+            clearRetryCountdown();
+            lastAnalysisContext = null;
+
+            const savedChapter = await saveChapterToSession(text, audit, optimizedText, auditJson);
+            const banner = savedChapter
+                ? showChapterSavedBanner(savedChapter.title, savedChapter.index)
+                : '';
+
+            if (savedChapter && activeSessionData?.chapters?.length) {
+                skipAutoAnalyze = true;
+                editor.value = '';
+                activeChapterId = FULL_SESSION_VIEW_ID;
+                showFullSessionOptimized(activeSessionData.chapters, banner);
+                setTimeout(() => { skipAutoAnalyze = false; }, 0);
+            } else {
+                showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, banner);
+            }
         }
 
         function escapeHtml(text) {
@@ -2092,7 +2353,7 @@
             await refreshSessionsList(activeSessionId);
         }
 
-        async function saveChapterToSession(originalText, audit, optimizedText) {
+        async function saveChapterToSession(originalText, audit, optimizedText, auditJson = null) {
             const session = await ensureActiveSession(originalText);
             if (!session) return null;
 
@@ -2102,6 +2363,7 @@
                 body: JSON.stringify({
                     originalText,
                     audit,
+                    auditJson,
                     optimizedText,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
@@ -2138,7 +2400,7 @@
             renderChaptersList(activeSessionData.chapters);
             skipAutoAnalyze = true;
             editor.value = chapter.originalText;
-            showDualAnalysis(chapter.audit, chapter.optimizedText);
+            showPedagogicalAnalysis(chapter.auditJson, chapter.audit, chapter.auditJson ? 'json' : 'prose', chapter.optimizedText);
             setTimeout(() => { skipAutoAnalyze = false; }, 0);
         }
 
@@ -2193,53 +2455,28 @@
                 }
 
                 const audit = auditData.audit;
+                const auditJson = auditData.auditJson || null;
+                const auditMode = auditData.auditMode || 'prose';
                 if (!audit) {
                     showError('La fase de auditoría no devolvió resultados.', { retryable: true });
                     return;
                 }
 
-                lastAnalysisContext.audit = audit;
-                showLoading('Fase 2: Optimizando texto…', true);
-
-                const rewritePayload = {
+                pendingRewriteContext = {
                     text,
+                    audit,
+                    auditJson,
+                    auditMode,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
-                    stage: 'rewrite',
-                    audit,
+                    sessionId,
+                    costConfirmed: Boolean(options.costConfirmed),
                 };
-                if (sessionId) rewritePayload.sessionId = sessionId;
+                lastAnalysisContext = { ...pendingRewriteContext };
 
-                const rewriteResult = await postSuggestStageWithRetry(rewritePayload, 'Fase 2');
-
-                if (!rewriteResult.response.ok) {
-                    handleStageError(rewriteResult, 'Fase 2');
-                    return;
-                }
-
-                const optimizedText = rewriteResult.data.optimizedText;
-                if (!optimizedText) {
-                    showError('La fase de reescritura no devolvió texto optimizado.', { retryable: true });
-                    return;
-                }
-
-                clearRetryCountdown();
-                lastAnalysisContext = null;
-
-                const savedChapter = await saveChapterToSession(text, audit, optimizedText);
-                const banner = savedChapter
-                    ? showChapterSavedBanner(savedChapter.title, savedChapter.index)
-                    : '';
-
-                if (savedChapter && activeSessionData?.chapters?.length) {
-                    skipAutoAnalyze = true;
-                    editor.value = '';
-                    activeChapterId = FULL_SESSION_VIEW_ID;
-                    showFullSessionOptimized(activeSessionData.chapters, banner);
-                    setTimeout(() => { skipAutoAnalyze = false; }, 0);
-                } else {
-                    showDualAnalysis(audit, optimizedText, banner);
-                }
+                analysisInFlight = false;
+                showAuditReview(auditJson, audit, auditMode);
+                return;
             } catch (error) {
                 console.error('Error al obtener sugerencia:', error);
                 showError(error.message || 'No se pudo completar el análisis.', { retryable: true });

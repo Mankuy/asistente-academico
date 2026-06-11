@@ -10,6 +10,7 @@ const FILES_TO_COPY = [
   'backend_academico.js',
   'sessions_store.js',
   'guardian.js',
+  'audit_json.js',
   'package.json',
   'iniciar_asistente.bat',
 ];
