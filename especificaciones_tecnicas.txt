@@ -1,146 +1,264 @@
 Especificaciones Técnicas — Asistente de Escritura Académica
-Versión 1.0 (alineada al código real) — Junio 2026
+Versión 3.0 (generada desde el código real) — Junio 2026
 
 ================================================================================
-1. ARQUITECTURA GENERAL
+1. MANIFIESTO LOCAL-FIRST
 ================================================================================
 
-Stack:
-- Backend: Node.js + Express (backend_academico.js), puerto 4000
-- Frontend: SPA en public/app_frontend.html (HTML/CSS/JS vanilla)
-- Persistencia local: JSON en data/sessions/*.json
-- Configuración: variables en .env (proveedor LLM, keys, Modo Búnker)
-- Despliegue opcional: Docker (docker-compose.yml) con bind 127.0.0.1:4000
+Principios implementados en el producto entregable:
 
-Módulos:
-- sessions_store.js — sesiones, capítulos, medidor de gasto (usage)
-- guardian.js — clasificación de intención (regex + LLM rápido), estimación de costo
-- audit_json.js — auditoría estructurada JSON, tarjetas aceptar/rechazar
-- biblioteca_store.js — RAG BM25 local sobre ./biblioteca/
-- docx_export.js — export Word a ./entregables/
-- bunker.js — Modo Búnker (solo localhost, sin salida a internet)
-
-================================================================================
-2. GUARDIÁN DE INTENCIÓN (anti-evasión)
-================================================================================
-
-Flujo:
-1. Regex sobre texto normalizado (leet-speak, patrones EN/ES de evasión)
-2. Si ambiguo: llamada LLM con modelo económico (LLM_FAST_MODELS_JSON)
-3. Si intención = evasión → bloqueo con mensaje pedagógico (sin llamar al modelo principal)
-
-Archivo: guardian.js
-- classifyIntentRegex(), parseGuardianJson(), estimateCostUsd(), estimateStageCostUsd()
+- BYOK (Bring Your Own Key): el usuario elige proveedor y modelo LLM; las API keys
+  se guardan en su .env local (LLM_KEYS_JSON), nunca en servidores del autor.
+- Cero telemetría: no hay analytics, tracking ni envío de texto a servidores propios.
+  El único destino remoto posible es el proveedor LLM que el usuario configuró.
+- Datos en disco del usuario:
+  - Sesiones: data/sessions/*.json
+  - Biblioteca local (RAG): ./biblioteca/ + data/biblioteca_index.json
+  - Entregables: ./entregables/
+  - Configuración: .env en la carpeta del proyecto
+- Modo Búnker (BUNKER_MODE=true): bloquea endpoints LLM no-localhost y desactiva
+  consultas Crossref. Badge en UI: «0 bytes salen de esta máquina».
+- Bind de red: BIND_HOST=127.0.0.1 por defecto; Docker expone 127.0.0.1:4000:4000.
 
 ================================================================================
-3. PIPELINE DE ANÁLISIS (dos fases)
+2. ARQUITECTURA REAL (módulos Node.js)
 ================================================================================
 
-POST /api/suggest con stage:
-- audit — Fase 1: JSON estructurado (tarjetas en UI)
-- rewrite — Fase 2: texto optimizado + referencias
-- full — ambas fases en una solicitud
+backend_academico.js
+  Servidor Express (puerto PORT, default 4000). Orquesta API, prompts v3.1,
+  pipeline audit/rewrite, integración con todos los módulos.
+
+guardian.js
+  Clasificación de intención (regex), parseo JSON del guardián, estimación de
+  costo USD (estimateCostUsd, estimateStageCostUsd).
+
+audit_json.js
+  Parseo y normalización de auditoría JSON; sanitizeZeroWidth; verificación
+  determinista quote_verified contra el texto original.
+
+integrity_verify.js
+  Verificador post-reescritura: citas perdidas/inventadas/alteradas,
+  datos numéricos alterados, sanitización zero-width/homoglyphs.
+
+sessions_store.js
+  CRUD de sesiones y fragmentos (array chapters), usage (medidor de gasto),
+  contexto LLM de sesión (últimos 4 fragmentos).
+
+biblioteca_store.js
+  Índice BM25 local sobre PDF/DOCX/TXT en ./biblioteca/.
+
+docx_export.js
+  assembleSessionBlocks, buildSessionExportText, export Word a ./entregables/.
+
+pdf_export.js
+  exportPdfEntregable (pdfkit): Times 12, doble espacio, sangría APA, referencias.
+
+bunker.js
+  isBunkerMode(), isLocalhostEndpoint(), assertBunkerAllowsEndpoint().
+
+public/app_frontend.html
+  SPA única: editor, sesiones, panel de aprendizaje, configuración, export.
+
+Dependencias npm declaradas: express, helmet, joi, docx, pdfkit.
+
+================================================================================
+3. FLUJO DEL GUARDIÁN (3 peajes)
+================================================================================
+
+Implementado en backend_academico.js + guardian.js, antes de llamar al LLM principal:
+
+Peaje 1 — Regex (guardian.js: classifyIntentRegex)
+  Normaliza leet-speak y busca patrones de evasión (Turnitin, bypass, etc.).
+  Si detecta evasión → bloqueo inmediato (sin LLM).
+
+Peaje 2 — FAST model (classifyIntentLLM)
+  Solo si el regex devuelve unknown. Usa LLM_FAST_MODELS_JSON (modelo barato).
+  En Modo Búnker: solo corre si el endpoint es localhost; si no, fail-open a unknown.
+  Si intención = evasión → bloqueo.
+
+Peaje 3 — Presupuestador (estimateCostUsd / POST /api/estimate)
+  Estima costo USD por caracteres + tabla de precios (guardian.js).
+  Si estimateUsd > COST_CONFIRM_THRESHOLD_USD y stage=audit sin costConfirmed
+  → HTTP 402, frontend pide confirmación.
+
+================================================================================
+4. PIPELINE DE 2 FASES + CADENA DE CONFIANZA
+================================================================================
+
+Cadena: «LLM propone, código verifica hechos, usuario decide».
+
+Fase 1 — Auditoría JSON (stage: audit)
+  Prompt: AUDIT_SYSTEM_PROMPT_JSON (v3.1, few-shot compacto).
+  Salida: JSON con resumen, veredicto, sugerencias, checklist, biblio_check.
+  Post-proceso código (audit_json.js):
+    - extractAuditJSON(raw, originalText)
+    - quote_verified en cada sugerencia (match literal o normalizado)
+    - Frontend: quote_verified=false → aviso no-aplicable, nunca tarjeta aceptable
+
+Fase 2 — Reescritura (stage: rewrite)
+  Solo sugerencias aceptadas (acceptedSuggestions + filterAcceptedSuggestions).
+  Prompt REWRITE_SYSTEM_PROMPT_V3: aplicar ÚNICAMENTE correcciones listadas;
+  no alterar citas/cifras no marcadas.
+  Post-proceso código (integrity_verify.js: verifyRewriteIntegrity):
+    - Compara original vs optimizado (citas in-text, años, Ley N°, porcentajes)
+    - Devuelve integrity: { ok, citas_perdidas, citas_inventadas,
+      citas_alteradas, datos_alterados }
+    - sanitiza zero-width/homoglyphs en el texto optimizado
+
+Decisión de diseño — banner ámbar (feature, no bug):
+  El banner reporta TODA diferencia detectada, incluyendo cambios que el usuario
+  aceptó en las tarjetas. Objetivo: confirmación consciente antes de exportar.
+  Texto UI: avisa que incluye cambios aprobados; no bloquea la exportación.
+
+stage: full — ejecuta audit + rewrite en una solicitud.
 
 Contexto inyectado al LLM:
-- Norma (APA/MLA/Chicago/Vancouver) y nivel académico
-- Memoria de sesión (últimos 4 capítulos)
-- Academic Context: biblioteca local (BM25) + Crossref (si Modo Búnker OFF)
+  - Norma y nivel académico
+  - Memoria de sesión (fragmentos previos)
+  - Academic Context: biblioteca BM25 + Crossref (si Búnker OFF)
 
-System Prompt v3.0: auditoría brutalmente honesta, sin reescritura en fase 1.
-
-================================================================================
-4. MODO BÚNKER (manifiesto soberano)
-================================================================================
-
-Variable: BUNKER_MODE=true en .env (también desde ⚙️ en frontend)
-
-Cuando está activo:
-- callLlmOnce() rechaza endpoints que no sean localhost/127.0.0.1
-- searchAcademicData() (Crossref) devuelve vacío
-- classifyIntentLLM() solo corre si el endpoint es local; si no, usa solo regex
-- Badge en header: «0 bytes salen de esta máquina»
-
-Uso típico: Ollama o LM Studio en http://localhost:11434
+TODO documentado (no implementado): «Doble Lectura» — FAST model relee sentido
+original vs optimizado; toggle OFF por defecto; fuera del MVP.
 
 ================================================================================
-5. RED Y PRIVACIDAD
+5. MODELO DE DATOS — SESIONES / FRAGMENTOS / CAPÍTULOS
 ================================================================================
 
-Servidor standalone:
-- BIND_HOST=127.0.0.1 por defecto (solo esta máquina)
+Archivo: data/sessions/{uuid}.json
 
-Docker:
-- docker-compose.yml mapea 127.0.0.1:4000:4000 (no expone a la LAN)
-- Dentro del contenedor: BIND_HOST=0.0.0.0 para aceptar el proxy de Docker
+Sesión:
+  id, name, nameAuto, norma, nivel, createdAt, updatedAt
+  chapters[] — array de fragmentos (nombre histórico; semántica = fragmentos)
+  usage — { totalCostUsd, totalRequests, totalChars, entries[] }
 
-Badge 🔒 Fuente de datos (frontend):
-«Tu texto se envía solo al proveedor LLM que VOS elegiste; nunca a nuestros servidores.»
+Fragmento (ítem de chapters[]):
+  id, index, title (etiqueta en sidebar)
+  originalText, audit, auditJson, optimizedText
+  isChapterStart (boolean, default false si ausente — backward-compat)
+  chapterTitle (string, solo si isChapterStart)
+  norma, nivel, createdAt
 
-Datos locales (no salen del disco salvo al LLM elegido):
-- Sesiones, capítulos, índice biblioteca, entregables Word
-
-================================================================================
-6. MEDIDOR DE GASTO
-================================================================================
-
-Cada análisis exitoso acumula en session.usage:
-- totalCostUsd (estimado por tokens/caracteres y tabla de precios en guardian.js)
-- totalRequests, totalChars
-- entries[] con stage (audit|rewrite|full), modelo, timestamp
-
-Visible en:
-- Panel de aprendizaje (barra superior)
-- Lista de sesiones (resumen USD)
-
-Confirmación de costo si estimateUsd > COST_CONFIRM_THRESHOLD_USD (default 0.10).
+Semántica de ensamblado (docx_export.js: assembleSessionBlocks):
+  - Fragmentos ordenados por index, unidos con salto de párrafo (\n\n).
+  - Sin «Capítulo N:» ni separadores --- salvo encabezado explícito.
+  - Si isChapterStart=true: inserta encabezado (chapterTitle o «Capítulo X»
+    autonumerado contando solo los marcados). En Word/PDF es Heading real.
 
 ================================================================================
-7. FRONTEND
+6. ENDPOINTS API (Express + Joi)
 ================================================================================
 
-Layout 3 columnas redimensionables:
-- Sesiones + capítulos | Editor | Panel de aprendizaje
+GET  /
+  Sirve public/app_frontend.html
 
-Funciones:
-- Debounce → auditoría JSON → tarjetas → reescritura con sugerencias aceptadas
-- Modo Tesis: chunking PDF/DOCX, pipeline pausable
-- Export Word de sesión activa
-- Tooltips en badges del header
-- Configuración multi-proveedor LLM (banco de API keys)
+GET  /api/config
+  Estado LLM, bunkerMode, bindHost, umbral de costo, proveedores.
 
-================================================================================
-8. API PRINCIPAL
-================================================================================
+POST /api/config — configSaveSchema
+  provider (LLM_PROVIDER_IDS), model, apiKey, apiKeys, baseUrl,
+  fastModel, fastModels, costConfirmThresholdUsd, bunkerMode
 
-GET  /api/config          — estado LLM, búnker, umbral de costo
-POST /api/config          — guardar .env
-POST /api/estimate        — estimación USD antes de analizar
-POST /api/suggest         — auditoría / reescritura / full
-GET  /api/sessions        — listar sesiones (con usage)
-POST /api/sessions        — crear sesión
-GET  /api/sessions/:id    — detalle
-PATCH/DELETE sesiones y capítulos
+POST /api/estimate — estimateSchema
+  text (1–5M chars), sessionId? (uuid)
+
+POST /api/suggest — suggestSchema
+  text, norma?, nivel?, stage? (audit|rewrite|full),
+  audit?, auditJson?, acceptedSuggestions?, sessionId?, costConfirmed?
+  Respuesta rewrite/full incluye integrity{} y usage{}
+
+GET  /api/sessions
+POST /api/sessions — sessionCreateSchema
+  name?, norma?, nivel?, seedText?
+
+GET  /api/sessions/:id
+PATCH /api/sessions/:id — sessionUpdateSchema
+  name?, norma?, nivel?
+
+DELETE /api/sessions/:id
+
+POST /api/sessions/:id/chapters — chapterCreateSchema
+  originalText, audit, optimizedText (requeridos)
+  auditJson?, title?, isChapterStart?, chapterTitle?, norma?, nivel?
+
+DELETE /api/sessions/:id/chapters/:chapterId
+
+GET  /api/biblioteca/status
 POST /api/biblioteca/reindex
-POST /api/export/docx
+
+POST /api/export/docx — exportDocxSchema
+  sessionId, title?, author?, authorLastName?
+
+POST /api/export/pdf — exportDocxSchema (mismo schema)
+  sessionId, title?, author?
+
+GET  /api/entregables/:filename
+  Descarga segura desde ./entregables/
 
 ================================================================================
-9. PRUEBAS AUTOMATIZADAS
+7. EXPORT A ./entregables/
 ================================================================================
 
-- test_guardian_paso1.js
-- test_audit_paso2.js
-- test_paso3_modules.js
-- test_paso4_modules.js (búnker, bind, Crossref off, usage)
+Word (docx_export.js):
+  Carátula APA/MLA, cuerpo con ensamblado de fragmentos, referencias colgantes.
+  Filename: {slug}_{timestamp}.docx
+
+PDF (pdf_export.js):
+  pdfkit, Times-Roman 12, interlineado doble, sangría primera línea (APA),
+  sangría francesa en referencias, carátula, numeración de página.
+  Filename: {slug}_{timestamp}.pdf
+
+Ambos usan assembleSessionBlocks (misma lógica que vista «Texto completo»).
 
 ================================================================================
-10. EMPAQUETADO
+8. VARIABLES DE ENTORNO (.env)
 ================================================================================
 
-node package_release.js → dist_release/ + Asistente_Academico_V1.zip
+Leídas por backend_academico.js (loadEnvFile al inicio):
 
-Inicio local: node backend_academico.js o iniciar_asistente.bat
-Inicio Docker: docker compose up --build
+PORT                    — puerto HTTP (default 4000)
+BIND_HOST               — interfaz de bind (default 127.0.0.1)
+LLM_PROVIDER            — proveedor activo
+LLM_MODEL               — modelo principal activo
+LLM_KEYS_JSON           — banco de API keys por proveedor
+LLM_MODELS_JSON         — modelos guardados por proveedor
+LLM_FAST_MODELS_JSON    — modelos económicos (guardián) por proveedor
+LLM_BASE_URLS_JSON      — URLs base (local/custom/azure)
+COST_CONFIRM_THRESHOLD_USD — umbral presupuestador (default 0.10)
+BUNKER_MODE             — true/false
+LLM_API_KEY             — legacy, key del proveedor activo
+LLM_BASE_URL            — legacy, URL del proveedor activo
+OPENROUTER_API_KEY      — alias legacy openrouter
+OPENROUTER_MODEL        — alias legacy openrouter
+OPENROUTER_HTTP_REFERER — header opcional OpenRouter
+
+Alias por proveedor (solo lectura al cargar, si no hay key en JSON):
+OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY, GOOGLE_API_KEY, etc.
 
 ================================================================================
-Fin del documento — refleja el código en producción, sin componentes ficticios
-(BERT fine-tuned, Drools, Kubernetes, Grafana) de versiones anteriores del spec.
+9. EMPAQUETADO (package_release.js)
+================================================================================
+
+Incluye: backend_academico.js, sessions_store.js, guardian.js, audit_json.js,
+biblioteca_store.js, docx_export.js, pdf_export.js, integrity_verify.js,
+bunker.js, package.json, iniciar_asistente.bat, Dockerfile, docker-compose.yml,
+public/app_frontend.html, .env.example
+
+No incluye: tests (test_*.js), data/, .env con keys reales, node_modules.
+
+Inicio: iniciar_asistente.bat o npm start → http://localhost:4000
+
+================================================================================
+10. ROADMAP DE VALIDACIÓN (FUTURO — no implementado)
+================================================================================
+
+Plan pedagógico propuesto para validar impacto en escritura académica:
+  - Diseño cuasi-experimental con grupos experimental/control
+  - Rúbricas VALUE (comunicación escrita, pensamiento crítico, alfabetización informacional)
+  - Métricas: errores de formato APA/MLA, auto-eficacia, ansiedad por falsos positivos
+  - Seguimiento a 3–6 meses post-intervención
+
+Esta sección describe investigación futura; el producto actual no incluye
+recolección de métricas ni dashboard de estudio.
+
+================================================================================
+Fin del documento — cada módulo y endpoint listado existe en el repositorio.

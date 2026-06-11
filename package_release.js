@@ -16,32 +16,58 @@ const FILES_TO_COPY = [
   'pdf_export.js',
   'integrity_verify.js',
   'bunker.js',
-  'package.json',
   'iniciar_asistente.bat',
   'Dockerfile',
   'docker-compose.yml',
 ];
 
+const PACKAGE_JSON_RELEASE = {
+  name: 'backend-academico',
+  version: '1.0.0',
+  main: 'backend_academico.js',
+  dependencies: {
+    docx: '^9.5.0',
+    express: '^4.18.2',
+    helmet: '^7.1.0',
+    joi: '^17.11.0',
+    pdfkit: '^0.17.2',
+  },
+  scripts: {
+    start: 'node backend_academico.js',
+    test: 'node test_guardian_paso1.js && node test_audit_paso2.js && node test_paso3_modules.js && node test_paso4_modules.js && node test_composer_v2.js',
+  },
+};
+
 const ENV_EXAMPLE = [
-  '# Proveedor activo',
+  '# ── Servidor ──',
+  'PORT=4000',
+  'BIND_HOST=127.0.0.1',
+  '',
+  '# ── Proveedor LLM activo (BYOK — Bring Your Own Key) ──',
   'LLM_PROVIDER=openrouter',
   'LLM_MODEL=openrouter/owl-alpha',
-  'PORT=4000',
   '',
-  '# Banco de keys y modelos (JSON). Se completa desde ⚙️ en la interfaz.',
+  '# Banco de keys, modelos y URLs por proveedor (JSON).',
+  '# Se completa desde ⚙️ en la interfaz; no pegues keys reales en este archivo de ejemplo.',
   'LLM_KEYS_JSON={}',
   'LLM_MODELS_JSON={}',
   'LLM_FAST_MODELS_JSON={}',
   'LLM_BASE_URLS_JSON={}',
-  'COST_CONFIRM_THRESHOLD_USD=0.10',
-  'BUNKER_MODE=false',
-  'BIND_HOST=127.0.0.1',
   '',
-  '# Legacy (opcional):',
+  '# ── Presupuestador (guardián de costo) ──',
+  '# Si la estimación supera este umbral (USD), el frontend pide confirmación.',
+  'COST_CONFIRM_THRESHOLD_USD=0.10',
+  '',
+  '# ── Modo Búnker (local-first estricto) ──',
+  '# true = solo endpoints localhost; sin Crossref ni LLM remoto.',
+  'BUNKER_MODE=false',
+  '',
+  '# ── Legacy / alias (opcional; la UI los sincroniza) ──',
   '# LLM_API_KEY=',
   '# LLM_BASE_URL=',
   '# OPENROUTER_API_KEY=',
   '# OPENROUTER_MODEL=openrouter/owl-alpha',
+  '# OPENROUTER_HTTP_REFERER=http://localhost:4000',
   '',
 ].join('\n');
 
@@ -119,6 +145,13 @@ function createRelease() {
   }
   copyDir(publicSrc, path.join(DIST_DIR, 'public'), (name) => name.endsWith('.html'));
   console.log('  + public/ (archivos .html)');
+
+  fs.writeFileSync(
+    path.join(DIST_DIR, 'package.json'),
+    `${JSON.stringify(PACKAGE_JSON_RELEASE, null, 2)}\n`,
+    'utf8'
+  );
+  console.log('  + package.json (generado para release)');
 
   fs.writeFileSync(path.join(DIST_DIR, '.env.example'), ENV_EXAMPLE, 'utf8');
   console.log('  + .env.example');
