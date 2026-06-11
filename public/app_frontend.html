@@ -416,6 +416,37 @@
             margin-top: 0.65rem;
             width: 100%;
         }
+        .editor-actions {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+        .thesis-progress {
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+            background: var(--bg-primary);
+        }
+        .thesis-progress-bar {
+            height: 8px;
+            background: var(--badge-bg);
+            border-radius: 999px;
+            overflow: hidden;
+            margin: 0.5rem 0;
+        }
+        .thesis-progress-fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.25s ease;
+        }
+        .thesis-progress-actions {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            margin-top: 0.5rem;
+        }
         .analysis-toolbar {
             display: flex;
             justify-content: flex-end;
@@ -1112,9 +1143,14 @@
     <section>
         <div class="editor-toolbar">
             <label for="editor">Editor de texto</label>
-            <button id="upload-btn" class="btn-upload" type="button">📎 Subir Documento</button>
+            <div class="editor-actions">
+                <button id="upload-btn" class="btn-upload" type="button">📎 Subir Documento</button>
+                <button id="thesis-btn" class="btn-upload" type="button" title="Procesar tesis completa por capítulos">📑 Modo Tesis</button>
+                <button id="export-docx-btn" class="btn-upload" type="button" title="Generar Word de la sesión activa">⬇️ Generar entregable Word</button>
+            </div>
         </div>
         <input type="file" id="file-upload" accept=".txt,.md,.pdf,.docx" style="display:none;">
+        <input type="file" id="thesis-upload" accept=".pdf,.docx" style="display:none;">
         <div class="context-bar">
             <div class="context-field">
                 <label for="norma-select">Normativa</label>
@@ -1240,7 +1276,18 @@
             custom: { model: '', docsUrl: '', keyOptional: true, needsUrl: true, baseUrl: '' },
         };
         const uploadBtn = document.getElementById('upload-btn');
+        const thesisBtn = document.getElementById('thesis-btn');
+        const exportDocxBtn = document.getElementById('export-docx-btn');
         const fileUpload = document.getElementById('file-upload');
+        const thesisUpload = document.getElementById('thesis-upload');
+        let thesisJob = {
+            running: false,
+            paused: false,
+            cancelled: false,
+            current: 0,
+            total: 0,
+            costAccum: 0,
+        };
         const normaSelect = document.getElementById('norma-select');
         const nivelSelect = document.getElementById('nivel-select');
         const themeBtn = document.getElementById('theme-btn');
@@ -2590,6 +2637,216 @@
             return `No se pudo extraer texto del ${extension.toUpperCase()}: ${message}`;
         }
 
+        function chunkThesisText(text, maxWords = 3000) {
+            const clean = String(text || '').trim();
+            if (!clean) return [];
+
+            const headingParts = clean.split(/\n(?=(?:#{1,3}\s+|(?:Capítulo|Chapter|CAPÍTULO)\s+\d+|\d+\.\s+[A-ZÁÉÍÓÚ]))/i);
+            if (headingParts.length > 1) {
+                return headingParts.map((part) => part.trim()).filter((part) => part.length > 120);
+            }
+
+            const words = clean.split(/\s+/);
+            const chunks = [];
+            for (let i = 0; i < words.length; i += maxWords) {
+                chunks.push(words.slice(i, i + maxWords).join(' '));
+            }
+            return chunks.filter(Boolean);
+        }
+
+        function showThesisProgress(message) {
+            const pct = thesisJob.total
+                ? Math.round((thesisJob.current / thesisJob.total) * 100)
+                : 0;
+            learningPanel.innerHTML = `
+                <div class="thesis-progress">
+                    <strong>Modo Tesis</strong>
+                    <p>${escapeHtml(message)}</p>
+                    <p>Capítulo ${thesisJob.current} de ${thesisJob.total} · Costo acumulado estimado: USD ${thesisJob.costAccum.toFixed(4)}</p>
+                    <div class="thesis-progress-bar"><div class="thesis-progress-fill" style="width:${pct}%"></div></div>
+                    <div class="thesis-progress-actions">
+                        <button type="button" class="btn" id="thesis-pause-btn">${thesisJob.paused ? '▶ Reanudar' : '⏸ Pausar'}</button>
+                        <button type="button" class="btn" id="thesis-cancel-btn">✕ Cancelar</button>
+                    </div>
+                </div>`;
+
+            document.getElementById('thesis-pause-btn')?.addEventListener('click', () => {
+                thesisJob.paused = !thesisJob.paused;
+                showThesisProgress(thesisJob.paused ? 'Pausado.' : 'Reanudando…');
+            });
+            document.getElementById('thesis-cancel-btn')?.addEventListener('click', () => {
+                thesisJob.cancelled = true;
+            });
+        }
+
+        async function processThesisChunkAuto(chunkText, sessionId, chunkIndex, total) {
+            const estimateResp = await apiJson('/api/estimate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: chunkText, sessionId }),
+            });
+            if (estimateResp.response.ok) {
+                thesisJob.costAccum += Number(estimateResp.data.estimateUsd || 0);
+            }
+
+            const auditResp = await postSuggestStageWithRetry({
+                text: chunkText,
+                norma: normaSelect.value,
+                nivel: nivelSelect.value,
+                stage: 'audit',
+                sessionId,
+                costConfirmed: true,
+            }, `Tesis ${chunkIndex}/${total} · Fase 1`);
+
+            if (!auditResp.response.ok) {
+                throw new Error(formatApiError(auditResp.response, auditResp.data));
+            }
+            if (auditResp.data.redirect) {
+                throw new Error(auditResp.data.message || 'Bloqueo de intención en Modo Tesis.');
+            }
+
+            const acceptedSuggestions = (auditResp.data.auditJson?.sugerencias || []).map((s) => s.id);
+            const rewriteResp = await postSuggestStageWithRetry({
+                text: chunkText,
+                norma: normaSelect.value,
+                nivel: nivelSelect.value,
+                stage: 'rewrite',
+                audit: auditResp.data.audit,
+                auditJson: auditResp.data.auditJson,
+                acceptedSuggestions,
+                sessionId,
+            }, `Tesis ${chunkIndex}/${total} · Fase 2`);
+
+            if (!rewriteResp.response.ok) {
+                throw new Error(formatApiError(rewriteResp.response, rewriteResp.data));
+            }
+
+            await apiJson(`/api/sessions/${sessionId}/chapters`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    originalText: chunkText,
+                    audit: auditResp.data.audit,
+                    auditJson: auditResp.data.auditJson,
+                    optimizedText: rewriteResp.data.optimizedText,
+                    title: `Capítulo ${chunkIndex}`,
+                    norma: normaSelect.value,
+                    nivel: nivelSelect.value,
+                }),
+            });
+        }
+
+        async function runThesisMode(file) {
+            if (thesisJob.running) {
+                showError('Ya hay un procesamiento de tesis en curso.');
+                return;
+            }
+
+            const extension = getFileExtension(file.name);
+            if (!['.pdf', '.docx'].includes(extension)) {
+                showError('Modo Tesis acepta .pdf o .docx completos.');
+                return;
+            }
+
+            thesisJob = { running: true, paused: false, cancelled: false, current: 0, total: 0, costAccum: 0 };
+            thesisBtn.disabled = true;
+            skipAutoAnalyze = true;
+
+            try {
+                showLoading('Extrayendo tesis completa…', true);
+                let extractedText = '';
+                if (extension === '.pdf') {
+                    extractedText = await extractPdfText(await readFileAsArrayBuffer(file));
+                } else {
+                    extractedText = await extractDocxText(await readFileAsArrayBuffer(file));
+                }
+
+                const chunks = chunkThesisText(extractedText);
+                if (!chunks.length) {
+                    showError('No se pudo trocear la tesis en capítulos.');
+                    return;
+                }
+
+                const session = await createNewSession(file.name.replace(/\.[^.]+$/, ''));
+                if (!session) return;
+
+                setActiveSession(session.id);
+                activeSessionData = session;
+                thesisJob.total = chunks.length;
+
+                for (let i = 0; i < chunks.length; i += 1) {
+                    while (thesisJob.paused && !thesisJob.cancelled) {
+                        await sleep(400);
+                    }
+                    if (thesisJob.cancelled) break;
+
+                    thesisJob.current = i + 1;
+                    showThesisProgress(`Procesando capítulo ${i + 1} de ${chunks.length}…`);
+                    await processThesisChunkAuto(chunks[i], session.id, i + 1, chunks.length);
+                    await loadSessionDetails(session.id);
+                    await refreshSessionsList(session.id);
+                }
+
+                if (thesisJob.cancelled) {
+                    learningPanel.innerHTML = '<p>Modo Tesis cancelado. Los capítulos ya procesados quedaron guardados.</p>';
+                } else {
+                    activeChapterId = FULL_SESSION_VIEW_ID;
+                    showFullSessionOptimized(activeSessionData.chapters);
+                }
+            } catch (error) {
+                console.error('Modo Tesis error:', error);
+                showError(error.message || 'Falló el Modo Tesis.', { retryable: true });
+            } finally {
+                thesisJob.running = false;
+                thesisBtn.disabled = false;
+                thesisUpload.value = '';
+                skipAutoAnalyze = false;
+            }
+        }
+
+        async function exportActiveSessionDocx() {
+            if (!activeSessionId || !activeSessionData?.chapters?.length) {
+                showError('Seleccioná una sesión con capítulos corregidos para exportar.');
+                return;
+            }
+
+            exportDocxBtn.disabled = true;
+            showLoading('Generando entregable Word…', true);
+
+            try {
+                const author = window.prompt('Autor (opcional):', 'Autor') || 'Autor';
+                const authorLastName = window.prompt('Apellido para encabezado MLA (opcional):', '') || '';
+                const title = window.prompt('Título del trabajo (opcional):', activeSessionData.name) || activeSessionData.name;
+
+                const { response, data } = await apiJson('/api/export/docx', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: activeSessionId,
+                        title,
+                        author,
+                        authorLastName,
+                    }),
+                });
+
+                if (!response.ok) {
+                    showError(data.error || 'No se pudo generar el Word.');
+                    return;
+                }
+
+                learningPanel.innerHTML = `
+                    <div class="chapter-saved-banner">
+                        Entregable generado: <strong>${escapeHtml(data.filename)}</strong>
+                        (${Math.round((data.bytes || 0) / 1024)} KB, ${escapeHtml(data.norma || '')})
+                    </div>
+                    <p><a href="${escapeHtml(data.downloadUrl)}" target="_blank" rel="noopener">⬇️ Descargar ${escapeHtml(data.filename)}</a></p>`;
+            } catch (error) {
+                showError(error.message || 'Error al exportar Word.');
+            } finally {
+                exportDocxBtn.disabled = false;
+            }
+        }
+
         async function handleFileUpload(file) {
             const extension = getFileExtension(file.name);
 
@@ -2865,12 +3122,25 @@
             fileUpload.click();
         });
 
+        thesisBtn.addEventListener('click', function () {
+            thesisUpload.click();
+        });
+
+        exportDocxBtn.addEventListener('click', exportActiveSessionDocx);
+
+        thesisUpload.addEventListener('change', function () {
+            const file = this.files && this.files[0];
+            if (file) runThesisMode(file);
+        });
+
         fileUpload.addEventListener('change', function () {
             const file = this.files && this.files[0];
             if (file) {
                 handleFileUpload(file);
             }
         });
+
+        apiJson('/api/biblioteca/reindex', { method: 'POST' }).catch(() => {});
 
         editor.addEventListener('input', analyzeEditorContent);
         normaSelect.addEventListener('change', () => {

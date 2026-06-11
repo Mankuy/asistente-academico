@@ -2,5 +2,7 @@ node_modules/
 .env
 dist_release/
 data/
+entregables/
+biblioteca/
 *.zip
 test_write.txt

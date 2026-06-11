@@ -11,6 +11,8 @@ const FILES_TO_COPY = [
   'sessions_store.js',
   'guardian.js',
   'audit_json.js',
+  'biblioteca_store.js',
+  'docx_export.js',
   'package.json',
   'iniciar_asistente.bat',
 ];

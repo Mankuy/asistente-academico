@@ -26,6 +26,17 @@ const {
   formatAuditForRewrite,
   filterAcceptedSuggestions,
 } = require('./audit_json');
+const {
+  rebuildBibliotecaIndex,
+  searchBibliotecaLocal,
+  formatLocalBibliotecaHits,
+  getBibliotecaStatus,
+} = require('./biblioteca_store');
+const {
+  safeEntregablePath,
+  exportDocxEntregable,
+  buildSessionExportText,
+} = require('./docx_export');
 
 const ENV_PATH = path.join(__dirname, '.env');
 
@@ -905,15 +916,22 @@ async function buildAcademicContextBlock(inputText) {
 
   const lookupResults = await Promise.all(
     queries.map(async (query) => {
-      const result = await searchAcademicData(query);
-      return result ? `Consulta "${query}":\n${result}` : '';
+      const localHits = searchBibliotecaLocal(query, 2);
+      const localPart = formatLocalBibliotecaHits(query, localHits);
+      const crossref = await searchAcademicData(query);
+      const crossrefPart = crossref ? `Consulta "${query}" — Crossref:\n${crossref}` : '';
+
+      if (localPart && crossrefPart) {
+        return `${localPart}\n\n${crossrefPart}`;
+      }
+      return localPart || crossrefPart || '';
     })
   );
 
   const condensed = lookupResults.filter(Boolean).join('\n\n');
   if (!condensed) return '';
 
-  return `[Academic Context — datos bibliográficos verificados vía Crossref]\n${condensed}`;
+  return `[Academic Context — biblioteca local prioritaria + Crossref]\n${condensed}`;
 }
 
 function buildSessionContextBlock(sessionContext) {
@@ -1023,6 +1041,13 @@ const configSaveSchema = Joi.object({
 const estimateSchema = Joi.object({
   text: Joi.string().trim().min(1).max(5000000).required(),
   sessionId: Joi.string().uuid().optional(),
+}).options({ stripUnknown: true });
+
+const exportDocxSchema = Joi.object({
+  sessionId: Joi.string().uuid().required(),
+  title: Joi.string().trim().max(200).allow('').optional(),
+  author: Joi.string().trim().max(120).allow('').optional(),
+  authorLastName: Joi.string().trim().max(80).allow('').optional(),
 }).options({ stripUnknown: true });
 
 const suggestSchema = Joi.object({
@@ -1299,6 +1324,67 @@ app.post('/api/estimate', asyncHandler(async (req, res) => {
     fastModel: getLlmFastModel(),
     charCount: value.text.length,
   });
+}));
+
+app.get('/api/biblioteca/status', asyncHandler(async (req, res) => {
+  return res.json(getBibliotecaStatus());
+}));
+
+app.post('/api/biblioteca/reindex', asyncHandler(async (req, res) => {
+  const index = await rebuildBibliotecaIndex();
+  return res.json({
+    success: true,
+    chunkCount: index.chunks.length,
+    updatedAt: index.updatedAt,
+    files: getBibliotecaStatus().files,
+  });
+}));
+
+app.post('/api/export/docx', asyncHandler(async (req, res) => {
+  const { error, value } = exportDocxSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  const session = getSession(value.sessionId);
+  if (!session) {
+    return res.status(404).json({ error: 'Sesión no encontrada' });
+  }
+  if (!session.chapters?.length) {
+    return res.status(400).json({
+      error: 'La sesión no tiene capítulos para exportar',
+      details: 'Corregí al menos un fragmento antes de generar el Word.',
+    });
+  }
+
+  const exportText = buildSessionExportText(session);
+  const result = await exportDocxEntregable({
+    text: exportText,
+    norma: session.norma,
+    title: value.title || session.name,
+    author: value.author || 'Autor',
+    authorLastName: value.authorLastName || '',
+    sessionName: session.name,
+  });
+
+  return res.json({
+    success: true,
+    filename: result.filename,
+    downloadUrl: result.downloadUrl,
+    bytes: result.bytes,
+    norma: session.norma,
+  });
+}));
+
+app.get('/api/entregables/:filename', asyncHandler(async (req, res) => {
+  const filePath = safeEntregablePath(req.params.filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+  return res.download(filePath, path.basename(filePath));
 }));
 
 app.get('/api/sessions', asyncHandler(async (req, res) => {
