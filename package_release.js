@@ -13,6 +13,8 @@ const FILES_TO_COPY = [
   'audit_json.js',
   'biblioteca_store.js',
   'docx_export.js',
+  'pdf_export.js',
+  'integrity_verify.js',
   'bunker.js',
   'package.json',
   'iniciar_asistente.bat',

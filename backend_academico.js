@@ -44,6 +44,11 @@ const {
   exportDocxEntregable,
   buildSessionExportText,
 } = require('./docx_export');
+const { exportPdfEntregable } = require('./pdf_export');
+const {
+  verifyRewriteIntegrity,
+  extractCitations,
+} = require('./integrity_verify');
 
 const ENV_PATH = path.join(__dirname, '.env');
 
@@ -763,15 +768,17 @@ Directrices éticas inmutables (Policy Engine):
 `.trim();
 
 const SYSTEM_PROMPT_V3 = `
-System Prompt (versión 3.0 — Potencia Industrial)
+System Prompt (versión 3.1 — Potencia Industrial)
 
 Eres un **Auditor Académico de Élite** y **Editor Científico Senior**. Tu estándar es publicación en revista indexada, no un simple resumen escolar.
 
 **Nivel de crítica: BRUTALMENTE HONESTO**
 - No seas perezoso ni complaciente. Si hay errores de lógica, citación, coherencia, tono o rigor, márcalos SIN PIEDAD.
+- Honestidad también significa NO inventar problemas para parecer riguroso. Si un aspecto está correcto, declaralo correcto. No hay cuota mínima de sugerencias; un texto excelente puede tener cero observaciones críticas.
 - Cada observación debe citar la norma (APA 7ª, MLA 9ª, Chicago 17ª, Vancouver) o principio académico violado.
 - Adapta la exigencia al [Contexto] de nivel y normativa provistos.
 - Objetivo: calidad de publicación científica.
+- Respondé en el mismo idioma del texto del usuario.
 - **Contexto académico:** Si detectas citas, intenta utilizar el [Academic Context] provisto para completar datos faltantes (como años correctos, DOIs o páginas aproximadas). Si la página exacta no está en el contexto, mantén el marcador [XX]. NUNCA inventes números de página o DOIs.
 
 ` + ETHICS_CORE_PROMPT;
@@ -811,6 +818,24 @@ Reglas:
 - "veredicto" solo puede ser apto, apto_con_reservas o no_apto.
 - Usá el [Academic Context] para "biblio_check" cuando haya citas verificables.
 - PROHIBIDO incluir reescritura completa del documento.
+
+**Ejemplo compacto (entrada → salida):**
+Entrada: "Según Smith (2020), el 45% de los casos no citan correctamente (García, 2019)."
+Salida:
+{
+  "resumen": "Hay un error de año en una cita parentética; el resto es coherente.",
+  "veredicto": "apto_con_reservas",
+  "sugerencias": [{
+    "id": "s1",
+    "quote": "(García, 2019)",
+    "replacement": "(García, 2018)",
+    "explanation": "El año no coincide con la fuente del contexto académico.",
+    "norm_ref": "APA 7ª — precisión en citas parentéticas",
+    "severity": "IMPORTANTE"
+  }],
+  "checklist": ["Verificar años de todas las citas parentéticas"],
+  "biblio_check": ["García publicó en 2018 según el contexto provisto"]
+}
 `;
 
 const REWRITE_SYSTEM_PROMPT_V3 = SYSTEM_PROMPT_V3 + `
@@ -820,13 +845,17 @@ const REWRITE_SYSTEM_PROMPT_V3 = SYSTEM_PROMPT_V3 + `
 Recibirás el texto original del usuario Y el informe de auditoría de la Fase 1.
 
 **Tu tarea:** Devuelve el **Texto Final Optimizado** seguido de referencias:
-- Aplica TODAS las correcciones legítimas del informe de auditoría.
+- Aplicá ÚNICAMENTE las correcciones listadas en el informe. NO introduzcas cambios adicionales no listados, salvo errores ortográficos objetivos.
+- NO alteres citas, años, cifras ni nombres propios que el informe no haya marcado.
 - Mantén la estructura de párrafos y la intención académica del autor.
 - Calidad de borrador listo para envío a tutor o revista.
 - Usa el [Academic Context] para completar metadatos bibliográficos reales cuando estén disponibles.
 - NO repitas la auditoría ni incluyas explicaciones meta.
 - Al final del texto optimizado, DEBES agregar una sección llamada '### Referencias Bibliográficas' que liste todas las obras citadas siguiendo estrictamente el formato APA o MLA indicado en el [Contexto].
 `;
+
+// TODO(composer-v2): "Doble Lectura" — toggle OFF por defecto; el FAST model relee
+// original vs optimizado buscando cambios de sentido. Fuera del MVP; no improvisar otra variante.
 
 const SYSTEM_PROMPT_V2_3 = SYSTEM_PROMPT_V3;
 
@@ -893,7 +922,7 @@ const NIVEL_OPTIONS = [
   'Artículo Científico',
 ];
 
-const CITATION_IN_TEXT_REGEX = /\(([A-Za-zÀ-ÿ]+, \d{4}[a-z]?)\)/g;
+const CITATION_IN_TEXT_REGEX = /\(([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s.'-]*,?\s*\d{4}[a-z]?)\)/g;
 const MAX_ACADEMIC_LOOKUPS = 6;
 
 function extractCitationQueries(inputText) {
@@ -1015,13 +1044,41 @@ async function buildRewriteUserText(inputText, norma, nivel, auditReport, sessio
   return `${contextualized}\n\n--- INFORME DE AUDITORÍA (FASE 1) ---\n${auditReport}\n\n--- FIN INFORME ---\n\nReescribí el texto aplicando las correcciones del informe e incluí la sección ### Referencias Bibliográficas al final.`;
 }
 
+async function buildAllowedCitationsForIntegrity(inputText, sessionContext = null) {
+  const citations = extractCitations(inputText).map((item) => item.raw);
+  const queries = extractCitationQueries(inputText);
+  if (!queries.length) return citations;
+
+  const lookupResults = await Promise.all(
+    queries.map(async (query) => {
+      const localHits = searchBibliotecaLocal(query, 2);
+      const localPart = formatLocalBibliotecaHits(query, localHits);
+      const crossref = await searchAcademicData(query);
+      return [localPart, crossref].filter(Boolean).join('\n');
+    })
+  );
+
+  const contextBlob = lookupResults.join('\n');
+  const yearMatches = contextBlob.match(/\b(19|20)\d{2}[a-z]?\b/g) || [];
+  for (const query of queries) {
+    const surname = query.split(',')[0]?.trim();
+    const year = (query.match(/\d{4}[a-z]?/) || [])[0];
+    if (surname && year) citations.push(`${surname}, ${year}`);
+    for (const yr of yearMatches) {
+      citations.push(`${surname}, ${yr}`);
+    }
+  }
+
+  return [...new Set(citations)];
+}
+
 async function runAuditStage(inputText, norma, nivel, sessionContext = null) {
   const contextualizedText = await buildContextualizedUserText(inputText, norma, nivel, sessionContext);
   const auditRaw = await callLlm(AUDIT_SYSTEM_PROMPT_JSON, contextualizedText, {
     maxTokens: LLM_MAX_TOKENS_AUDIT,
     jsonMode: true,
   });
-  return extractAuditJSON(auditRaw);
+  return extractAuditJSON(auditRaw, inputText);
 }
 
 async function runRewriteStage(inputText, norma, nivel, auditResult, sessionContext = null) {
@@ -1029,8 +1086,20 @@ async function runRewriteStage(inputText, norma, nivel, auditResult, sessionCont
     ? auditResult
     : formatAuditForRewrite(auditResult?.auditJson, auditResult?.audit);
   const userText = await buildRewriteUserText(inputText, norma, nivel, auditReport, sessionContext);
-  const optimizedText = await callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, { maxTokens: LLM_MAX_TOKENS_REWRITE });
-  return sanitizeZeroWidth(optimizedText);
+  const optimizedRaw = await callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, { maxTokens: LLM_MAX_TOKENS_REWRITE });
+  const allowedCitations = await buildAllowedCitationsForIntegrity(inputText, sessionContext);
+  const integrityResult = verifyRewriteIntegrity(inputText, optimizedRaw, { allowedCitations });
+
+  return {
+    optimizedText: integrityResult.sanitizedOptimized,
+    integrity: {
+      ok: integrityResult.ok,
+      citas_perdidas: integrityResult.citas_perdidas,
+      citas_inventadas: integrityResult.citas_inventadas,
+      citas_alteradas: integrityResult.citas_alteradas,
+      datos_alterados: integrityResult.datos_alterados,
+    },
+  };
 }
 
 function buildAuditApiPayload(auditResult) {
@@ -1151,6 +1220,8 @@ const chapterCreateSchema = Joi.object({
   auditJson: Joi.object().allow(null).optional(),
   optimizedText: Joi.string().trim().min(1).max(5000000).required(),
   title: Joi.string().trim().max(120).allow('').optional(),
+  isChapterStart: Joi.boolean().optional(),
+  chapterTitle: Joi.string().trim().max(120).allow('').optional(),
   norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),
   nivel: Joi.string().valid(...NIVEL_OPTIONS).optional(),
 }).options({ stripUnknown: true });
@@ -1418,13 +1489,49 @@ app.post('/api/export/docx', asyncHandler(async (req, res) => {
     });
   }
 
-  const exportText = buildSessionExportText(session);
   const result = await exportDocxEntregable({
-    text: exportText,
+    session,
     norma: session.norma,
     title: value.title || session.name,
     author: value.author || 'Autor',
     authorLastName: value.authorLastName || '',
+    sessionName: session.name,
+  });
+
+  return res.json({
+    success: true,
+    filename: result.filename,
+    downloadUrl: result.downloadUrl,
+    bytes: result.bytes,
+    norma: session.norma,
+  });
+}));
+
+app.post('/api/export/pdf', asyncHandler(async (req, res) => {
+  const { error, value } = exportDocxSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  const session = getSession(value.sessionId);
+  if (!session) {
+    return res.status(404).json({ error: 'Sesión no encontrada' });
+  }
+  if (!session.chapters?.length) {
+    return res.status(400).json({
+      error: 'La sesión no tiene fragmentos para exportar',
+      details: 'Corregí al menos un fragmento antes de generar el PDF.',
+    });
+  }
+
+  const result = await exportPdfEntregable({
+    session,
+    norma: session.norma,
+    title: value.title || session.name,
+    author: value.author || 'Autor',
     sessionName: session.name,
   });
 
@@ -1634,7 +1741,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         };
       }
 
-      const optimizedText = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
+      const rewriteResult = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
       const usage = recordSuggestUsage(
         value.sessionId,
         'rewrite',
@@ -1645,7 +1752,8 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       return res.json({
         redirect: false,
         stage: 'rewrite',
-        optimizedText,
+        optimizedText: rewriteResult.optimizedText,
+        integrity: rewriteResult.integrity,
         norma,
         nivel,
         sessionId: value.sessionId || null,
@@ -1658,7 +1766,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
 
     console.log(`[api/suggest] Análisis completo (2 etapas) · ${provider.label} · ${getLlmModel()}`);
     const auditResult = await runAuditStage(inputText, norma, nivel, sessionContext);
-    const optimizedText = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
+    const rewriteResult = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
     const usage = recordSuggestUsage(
       value.sessionId,
       'full',
@@ -1671,9 +1779,10 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       redirect: false,
       stage: 'full',
       ...buildAuditApiPayload(auditResult),
-      optimizedText,
+      optimizedText: rewriteResult.optimizedText,
+      integrity: rewriteResult.integrity,
       original: inputText,
-      suggested: optimizedText,
+      suggested: rewriteResult.optimizedText,
       suggestion: auditResult.audit,
       norma,
       nivel,
@@ -1682,7 +1791,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       providerLabel: provider.label,
       usage,
       bunkerMode: isBunkerMode(),
-      explanation: 'Análisis en dos etapas (Auditoría JSON + Reescritura) con System Prompt v3.0.',
+      explanation: 'Análisis en dos etapas (Auditoría JSON + Reescritura) con System Prompt v3.1.',
     });
   } catch (err) {
     if (err instanceof ApiError) {

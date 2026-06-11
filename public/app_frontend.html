@@ -913,6 +913,56 @@
             cursor: pointer;
         }
         .bunker-toggle input { margin-top: 0.2rem; }
+        .fragment-save-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem 1rem;
+            align-items: center;
+            margin: 0.5rem 0 0.75rem;
+            font-size: 0.85rem;
+        }
+        .fragment-save-options input[type="text"] {
+            flex: 1 1 220px;
+            min-width: 180px;
+            padding: 0.35rem 0.5rem;
+            border: 1px solid var(--border);
+            border-radius: 0.35rem;
+            background: var(--bg);
+            color: var(--text);
+        }
+        .fragment-save-options .field-hidden { display: none; }
+        .integrity-banner {
+            background: rgba(180, 83, 9, 0.12);
+            border: 1px solid rgba(180, 83, 9, 0.35);
+            border-radius: 0.45rem;
+            padding: 0.65rem 0.75rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.85rem;
+        }
+        .integrity-banner details { margin-top: 0.45rem; }
+        .integrity-banner ul { margin: 0.35rem 0 0 1rem; padding: 0; }
+        .suggestion-card.unverified {
+            opacity: 0.75;
+            border-style: dashed;
+        }
+        .quote-warning {
+            color: var(--status-warn);
+            font-size: 0.82rem;
+            margin: 0 0 0.4rem;
+        }
+        .export-format-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .export-format-wrap select {
+            font-size: 0.8rem;
+            padding: 0.25rem 0.35rem;
+            border-radius: 0.35rem;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+        }
         .chapter-saved-banner {
             background: rgba(25, 135, 84, 0.12);
             color: var(--status-ok);
@@ -1166,12 +1216,12 @@
             <h2>Sesiones</h2>
             <button id="new-session-btn" class="btn-session-new" type="button" title="Nueva sesión" aria-label="Nueva sesión">+</button>
         </div>
-        <p class="sessions-help">Cada corrección se guarda como capítulo. Al agregar más texto, el asistente mantiene el estilo de la sesión.</p>
+        <p class="sessions-help">Cada corrección se guarda como fragmento de un mismo documento. El asistente mantiene el estilo entre fragmentos; marcá un fragmento como capítulo solo si tu trabajo los usa.</p>
         <div id="sessions-list" class="session-list">
             <p class="session-empty">Sin sesiones aún.</p>
         </div>
         <div id="chapters-panel" class="chapters-panel hidden">
-            <h3 id="chapters-panel-title">Capítulos</h3>
+            <h3 id="chapters-panel-title">Fragmentos</h3>
             <div id="chapters-list" class="chapter-list"></div>
         </div>
     </aside>
@@ -1182,7 +1232,13 @@
             <div class="editor-actions">
                 <button id="upload-btn" class="btn-upload" type="button">📎 Subir Documento</button>
                 <button id="thesis-btn" class="btn-upload" type="button" title="Procesar tesis completa por capítulos">📑 Modo Tesis</button>
-                <button id="export-docx-btn" class="btn-upload" type="button" title="Generar Word de la sesión activa">⬇️ Generar entregable Word</button>
+                <span class="export-format-wrap">
+                    <button id="export-btn" class="btn-upload" type="button" title="Generar entregable de la sesión activa">⬇️ Generar entregable</button>
+                    <select id="export-format" aria-label="Formato de entregable">
+                        <option value="docx">Word</option>
+                        <option value="pdf">PDF</option>
+                    </select>
+                </span>
             </div>
         </div>
         <input type="file" id="file-upload" accept=".txt,.md,.pdf,.docx" style="display:none;">
@@ -1213,6 +1269,13 @@
                     <option value="Artículo Científico">Artículo Científico</option>
                 </select>
             </div>
+        </div>
+        <div class="fragment-save-options" id="fragment-save-options">
+            <label for="fragment-chapter-start">
+                <input id="fragment-chapter-start" type="checkbox">
+                Este fragmento inicia un capítulo nuevo
+            </label>
+            <input id="fragment-chapter-title" class="field-hidden" type="text" maxlength="120" placeholder="Título del capítulo (opcional)">
         </div>
         <textarea id="editor" placeholder="Escriba su texto aquí…" rows="10"></textarea>
     </section>
@@ -1317,7 +1380,10 @@
         };
         const uploadBtn = document.getElementById('upload-btn');
         const thesisBtn = document.getElementById('thesis-btn');
-        const exportDocxBtn = document.getElementById('export-docx-btn');
+        const exportBtn = document.getElementById('export-btn');
+        const exportFormatSelect = document.getElementById('export-format');
+        const fragmentChapterStart = document.getElementById('fragment-chapter-start');
+        const fragmentChapterTitle = document.getElementById('fragment-chapter-title');
         const fileUpload = document.getElementById('file-upload');
         const thesisUpload = document.getElementById('thesis-upload');
         let thesisJob = {
@@ -1806,7 +1872,87 @@
         function showChapterSavedBanner(chapterTitle, chapterIndex) {
             return `
                 <div class="chapter-saved-banner">
-                    Capítulo ${chapterIndex} guardado: <strong>${escapeHtml(chapterTitle)}</strong>. Podés agregar el siguiente fragmento en el editor.
+                    Fragmento ${chapterIndex} guardado: <strong>${escapeHtml(chapterTitle)}</strong>. Podés agregar el siguiente fragmento en el editor.
+                </div>`;
+        }
+
+        function getFragmentSaveOptions() {
+            const isChapterStart = Boolean(fragmentChapterStart?.checked);
+            return {
+                isChapterStart,
+                chapterTitle: isChapterStart ? (fragmentChapterTitle?.value || '').trim() : '',
+            };
+        }
+
+        function resetFragmentSaveOptions() {
+            if (fragmentChapterStart) fragmentChapterStart.checked = false;
+            if (fragmentChapterTitle) {
+                fragmentChapterTitle.value = '';
+                fragmentChapterTitle.classList.add('field-hidden');
+            }
+        }
+
+        function getMarkedChapterNumber(chapters, fragment) {
+            let count = 0;
+            for (const item of getSortedChapters(chapters)) {
+                if (item.isChapterStart) {
+                    count += 1;
+                    if (item.id === fragment.id) return count;
+                }
+            }
+            return count;
+        }
+
+        function getChapterHeadingLabel(fragment, chapters) {
+            if (!fragment.isChapterStart) return '';
+            const custom = (fragment.chapterTitle || '').trim();
+            if (custom) return custom;
+            return `Capítulo ${getMarkedChapterNumber(chapters, fragment)}`;
+        }
+
+        function assembleFragmentsPlain(chapters) {
+            const sorted = getSortedChapters(chapters);
+            const parts = [];
+
+            for (const fragment of sorted) {
+                const heading = getChapterHeadingLabel(fragment, sorted);
+                if (heading) parts.push(heading);
+                const body = stripReferencesSection(fragment.optimizedText);
+                if (body) parts.push(body);
+            }
+
+            const references = sorted
+                .map((fragment) => extractReferencesSection(fragment.optimizedText))
+                .filter(Boolean)
+                .pop();
+
+            let combined = parts.filter(Boolean).join('\n\n');
+            if (references) combined += `\n\n${references}`;
+            return combined;
+        }
+
+        function buildIntegrityBannerHtml(integrity) {
+            if (!integrity || integrity.ok !== false) return '';
+
+            const diffCount = (integrity.citas_perdidas?.length || 0)
+                + (integrity.citas_inventadas?.length || 0)
+                + (integrity.citas_alteradas?.length || 0)
+                + (integrity.datos_alterados?.length || 0);
+
+            const listItems = [];
+            (integrity.citas_perdidas || []).forEach((item) => listItems.push(`<li>Cita perdida: ${escapeHtml(item)}</li>`));
+            (integrity.citas_inventadas || []).forEach((item) => listItems.push(`<li>Cita inventada: ${escapeHtml(item)}</li>`));
+            (integrity.citas_alteradas || []).forEach((item) => {
+                listItems.push(`<li>Cita alterada (${escapeHtml(item.apellido)}): ${escapeHtml(item.original)} → ${escapeHtml(item.optimizado)}</li>`);
+            });
+            (integrity.datos_alterados || []).forEach((item) => {
+                listItems.push(`<li>Dato alterado (${escapeHtml(item.tipo)}): ${escapeHtml(item.raw || item.valor)}</li>`);
+            });
+
+            return `
+                <div class="integrity-banner">
+                    <strong>⚠️ El verificador detectó ${diffCount} diferencia(s) de citas/datos respecto a tu original — revisalas antes de exportar.</strong>
+                    ${listItems.length ? `<details><summary>Ver detalle</summary><ul>${listItems.join('')}</ul></details>` : ''}
                 </div>`;
         }
 
@@ -1831,25 +1977,7 @@
         }
 
         function buildCombinedOptimizedText(chapters) {
-            const sorted = getSortedChapters(chapters);
-            if (!sorted.length) return '';
-
-            const bodies = sorted.map((chapter) => stripReferencesSection(chapter.optimizedText));
-            const references = sorted
-                .map((chapter) => extractReferencesSection(chapter.optimizedText))
-                .filter(Boolean)
-                .pop() || '';
-
-            const parts = sorted.map((chapter, index) => {
-                const header = `Capítulo ${chapter.index}: ${chapter.title}`;
-                return `${header}\n\n${bodies[index]}`;
-            });
-
-            let combined = parts.join('\n\n---\n\n');
-            if (references) {
-                combined += `\n\n---\n\n${references}`;
-            }
-            return combined;
+            return assembleFragmentsPlain(chapters);
         }
 
         function bindCopyButton(button, text) {
@@ -1872,17 +2000,20 @@
         function showFullSessionOptimized(chapters, bannerHtml = '') {
             const sorted = getSortedChapters(chapters);
             if (!sorted.length) {
-                learningPanel.innerHTML = '<p>Esta sesión aún no tiene capítulos corregidos.</p>';
+                learningPanel.innerHTML = '<p>Esta sesión aún no tiene fragmentos corregidos.</p>';
                 return;
             }
 
             const combinedText = buildCombinedOptimizedText(sorted);
-            const blocksHtml = sorted.map((chapter) => `
+            const blocksHtml = sorted.map((fragment) => {
+                const heading = getChapterHeadingLabel(fragment, sorted);
+                const headingHtml = heading ? `<h4>${escapeHtml(heading)}</h4>` : '';
+                return `
                 <article class="full-session-block">
-                    <h4>Capítulo ${chapter.index}: ${escapeHtml(chapter.title)}</h4>
-                    <div class="block-text">${escapeHtml(stripReferencesSection(chapter.optimizedText))}</div>
-                </article>
-            `).join('');
+                    ${headingHtml}
+                    <div class="block-text">${escapeHtml(stripReferencesSection(fragment.optimizedText))}</div>
+                </article>`;
+            }).join('');
 
             const references = sorted
                 .map((chapter) => extractReferencesSection(chapter.optimizedText))
@@ -1893,9 +2024,9 @@
                 ${bannerHtml}
                 <div class="analysis-result">
                     <section class="analysis-section optimized-section full-session-section">
-                        <h3>📄 Texto completo de la sesión (${sorted.length} capítulo${sorted.length === 1 ? '' : 's'})</h3>
+                        <h3>📄 Texto completo de la sesión (${sorted.length} fragmento${sorted.length === 1 ? '' : 's'})</h3>
                         <p style="font-size:0.8rem;color:var(--muted);margin:0 0 0.6rem;">
-                            Todos los fragmentos optimizados, en orden. Un clic en un capítulo individual muestra su auditoría.
+                            Todos los fragmentos optimizados, en orden continuo. Un clic en un fragmento individual muestra su auditoría.
                         </p>
                         <div class="analysis-toolbar">
                             <button type="button" class="btn-copy" id="copy-full-session-btn">Copiar texto completo</button>
@@ -1925,6 +2056,18 @@
         }
 
         function buildSuggestionCardHtml(item, state) {
+            if (item.quote_verified === false) {
+                return `
+                <article class="suggestion-card unverified" data-suggestion-id="${escapeAttr(item.id)}">
+                    <p class="quote-warning">⚠️ El fragmento citado no se encontró textualmente en tu texto — no es aplicable.</p>
+                    <div class="suggestion-card-head">
+                        <span class="severity-badge ${escapeAttr(item.severity)}">${escapeHtml(item.severity)}</span>
+                    </div>
+                    <blockquote class="suggestion-quote">"${escapeHtml(item.quote)}"</blockquote>
+                    <p class="suggestion-field">${escapeHtml(item.explanation)}</p>
+                </article>`;
+            }
+
             const accepted = state !== 'rejected';
             const cardClass = state === 'rejected' ? 'rejected' : 'accepted';
             return `
@@ -1946,7 +2089,7 @@
         function getAcceptedSuggestionIds() {
             if (!pendingRewriteContext?.auditJson?.sugerencias) return [];
             return pendingRewriteContext.auditJson.sugerencias
-                .filter((item) => suggestionDecisions[item.id] !== 'rejected')
+                .filter((item) => item.quote_verified !== false && suggestionDecisions[item.id] !== 'rejected')
                 .map((item) => item.id);
         }
 
@@ -1979,7 +2122,9 @@
             }
 
             suggestionDecisions = {};
-            auditJson.sugerencias.forEach((item) => { suggestionDecisions[item.id] = 'accepted'; });
+            auditJson.sugerencias.forEach((item) => {
+                suggestionDecisions[item.id] = item.quote_verified === false ? 'rejected' : 'accepted';
+            });
 
             const cardsHtml = auditJson.sugerencias.map((item) => buildSuggestionCardHtml(item, 'accepted')).join('');
             const checklistHtml = (auditJson.checklist || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
@@ -2002,8 +2147,9 @@
             document.getElementById('run-rewrite-btn')?.addEventListener('click', runRewriteFromReview);
         }
 
-        function showPedagogicalAnalysis(auditJson, auditProse, auditMode, optimizedText, bannerHtml = '') {
+        function showPedagogicalAnalysis(auditJson, auditProse, auditMode, optimizedText, bannerHtml = '', integrity = null) {
             const cleanOptimized = sanitizeZeroWidthClient(optimizedText);
+            const integrityHtml = buildIntegrityBannerHtml(integrity);
             const auditSection = auditJson && auditMode === 'json'
                 ? (() => {
                     const cardsHtml = auditJson.sugerencias.map((item) => {
@@ -2031,6 +2177,7 @@
                 <div class="analysis-result">
                     ${auditSection}
                     <section class="analysis-section optimized-section">
+                        ${integrityHtml}
                         <h3>✨ Texto Final Optimizado</h3>
                         <div class="analysis-toolbar">
                             <button type="button" class="btn-copy" id="copy-optimized-btn">Copiar al portapapeles</button>
@@ -2044,8 +2191,8 @@
             if (auditJson && auditMode === 'json') bindSuggestionCardEvents();
         }
 
-        function showDualAnalysis(audit, optimizedText, bannerHtml = '', auditJson = null, auditMode = 'prose') {
-            showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, bannerHtml);
+        function showDualAnalysis(audit, optimizedText, bannerHtml = '', auditJson = null, auditMode = 'prose', integrity = null) {
+            showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, bannerHtml, integrity);
         }
 
         async function runRewriteFromReview() {
@@ -2082,7 +2229,7 @@
                 }
 
                 syncSessionUsage(rewriteResult.data.usage);
-                await finalizeAnalysis(ctx.text, ctx.audit, ctx.auditJson, ctx.auditMode, optimizedText);
+                await finalizeAnalysis(ctx.text, ctx.audit, ctx.auditJson, ctx.auditMode, optimizedText, rewriteResult.data.integrity);
             } catch (error) {
                 showError(error.message || 'No se pudo completar la optimización.', { retryable: true });
             } finally {
@@ -2091,7 +2238,7 @@
             }
         }
 
-        async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText) {
+        async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText, integrity = null) {
             clearRetryCountdown();
             lastAnalysisContext = null;
 
@@ -2100,6 +2247,8 @@
                 ? showChapterSavedBanner(savedChapter.title, savedChapter.index)
                 : '';
 
+            if (savedChapter) resetFragmentSaveOptions();
+
             if (savedChapter && activeSessionData?.chapters?.length) {
                 skipAutoAnalyze = true;
                 editor.value = '';
@@ -2107,7 +2256,7 @@
                 showFullSessionOptimized(activeSessionData.chapters, banner);
                 setTimeout(() => { skipAutoAnalyze = false; }, 0);
             } else {
-                showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, banner);
+                showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, banner, integrity);
             }
         }
 
@@ -2296,7 +2445,7 @@
                                 <button type="button" class="session-action-btn session-delete-btn" data-session-id="${escapeAttr(session.id)}" title="Eliminar sesión">🗑️</button>
                             </div>
                         </div>
-                        <div class="session-meta">${session.chapterCount} capítulo(s)${session.usage?.totalCostUsd ? ` · USD ${formatUsageUsd(session.usage.totalCostUsd)}` : ''}</div>
+                        <div class="session-meta">${session.chapterCount} fragmento(s)${session.usage?.totalCostUsd ? ` · USD ${formatUsageUsd(session.usage.totalCostUsd)}` : ''}</div>
                     </div>`;
             }).join('');
 
@@ -2462,7 +2611,7 @@
         async function deleteSessionById(sessionId) {
             const session = sessionsIndex.find((item) => item.id === sessionId);
             const label = session ? session.name : 'esta sesión';
-            if (!window.confirm(`¿Eliminar "${label}" y todos sus capítulos?`)) return;
+            if (!window.confirm(`¿Eliminar "${label}" y todos sus fragmentos?`)) return;
 
             const { response } = await apiJson(`/api/sessions/${sessionId}`, { method: 'DELETE' });
             if (!response.ok) {
@@ -2482,10 +2631,11 @@
             await refreshSessionsList(activeSessionId);
         }
 
-        async function saveChapterToSession(originalText, audit, optimizedText, auditJson = null) {
+        async function saveChapterToSession(originalText, audit, optimizedText, auditJson = null, fragmentMeta = null) {
             const session = await ensureActiveSession(originalText);
             if (!session) return null;
 
+            const fragmentOptions = fragmentMeta || getFragmentSaveOptions();
             const { response, data } = await apiJson(`/api/sessions/${session.id}/chapters`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2494,6 +2644,8 @@
                     audit,
                     auditJson,
                     optimizedText,
+                    isChapterStart: Boolean(fragmentOptions.isChapterStart),
+                    chapterTitle: fragmentOptions.chapterTitle || '',
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
                 }),
@@ -2721,21 +2873,51 @@
             return `No se pudo extraer texto del ${extension.toUpperCase()}: ${message}`;
         }
 
+        function parseThesisChunkMeta(part) {
+            const trimmed = String(part || '').trim();
+            if (!trimmed) return null;
+
+            const firstLine = trimmed.split('\n')[0].trim();
+            const chapterMatch = firstLine.match(/^(?:#{1,3}\s+)?(?:Capítulo|Chapter|CAPÍTULO)\s*(\d+)?[:\s.-]*(.*)$/i);
+            if (chapterMatch) {
+                const title = (chapterMatch[2] || firstLine).trim() || firstLine;
+                return { text: trimmed, isChapterStart: true, chapterTitle: title };
+            }
+
+            const numberedMatch = firstLine.match(/^(\d+\.)\s+([A-ZÁÉÍÓÚ].+)$/);
+            if (numberedMatch) {
+                return { text: trimmed, isChapterStart: true, chapterTitle: numberedMatch[2].trim() };
+            }
+
+            const hashMatch = firstLine.match(/^#{1,3}\s+(.+)$/);
+            if (hashMatch) {
+                return { text: trimmed, isChapterStart: true, chapterTitle: hashMatch[1].trim() };
+            }
+
+            return { text: trimmed, isChapterStart: false, chapterTitle: '' };
+        }
+
         function chunkThesisText(text, maxWords = 3000) {
             const clean = String(text || '').trim();
             if (!clean) return [];
 
             const headingParts = clean.split(/\n(?=(?:#{1,3}\s+|(?:Capítulo|Chapter|CAPÍTULO)\s+\d+|\d+\.\s+[A-ZÁÉÍÓÚ]))/i);
             if (headingParts.length > 1) {
-                return headingParts.map((part) => part.trim()).filter((part) => part.length > 120);
+                return headingParts
+                    .map((part) => parseThesisChunkMeta(part))
+                    .filter((chunk) => chunk && chunk.text.length > 120);
             }
 
             const words = clean.split(/\s+/);
             const chunks = [];
             for (let i = 0; i < words.length; i += maxWords) {
-                chunks.push(words.slice(i, i + maxWords).join(' '));
+                chunks.push({
+                    text: words.slice(i, i + maxWords).join(' '),
+                    isChapterStart: false,
+                    chapterTitle: '',
+                });
             }
-            return chunks.filter(Boolean);
+            return chunks.filter((chunk) => chunk.text);
         }
 
         function showThesisProgress(message) {
@@ -2746,7 +2928,7 @@
                 <div class="thesis-progress">
                     <strong>Modo Tesis</strong>
                     <p>${escapeHtml(message)}</p>
-                    <p>Capítulo ${thesisJob.current} de ${thesisJob.total} · Costo acumulado estimado: USD ${thesisJob.costAccum.toFixed(4)}</p>
+                    <p>Fragmento ${thesisJob.current} de ${thesisJob.total} · Costo acumulado estimado: USD ${thesisJob.costAccum.toFixed(4)}</p>
                     <div class="thesis-progress-bar"><div class="thesis-progress-fill" style="width:${pct}%"></div></div>
                     <div class="thesis-progress-actions">
                         <button type="button" class="btn" id="thesis-pause-btn">${thesisJob.paused ? '▶ Reanudar' : '⏸ Pausar'}</button>
@@ -2763,7 +2945,12 @@
             });
         }
 
-        async function processThesisChunkAuto(chunkText, sessionId, chunkIndex, total) {
+        async function processThesisChunkAuto(chunk, sessionId, chunkIndex, total) {
+            const chunkText = typeof chunk === 'string' ? chunk : chunk.text;
+            const chunkMeta = typeof chunk === 'string'
+                ? { isChapterStart: false, chapterTitle: '' }
+                : { isChapterStart: Boolean(chunk.isChapterStart), chapterTitle: chunk.chapterTitle || '' };
+
             const estimateResp = await apiJson('/api/estimate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2789,7 +2976,9 @@
                 throw new Error(auditResp.data.message || 'Bloqueo de intención en Modo Tesis.');
             }
 
-            const acceptedSuggestions = (auditResp.data.auditJson?.sugerencias || []).map((s) => s.id);
+            const acceptedSuggestions = (auditResp.data.auditJson?.sugerencias || [])
+                .filter((s) => s.quote_verified !== false)
+                .map((s) => s.id);
             const rewriteResp = await postSuggestStageWithRetry({
                 text: chunkText,
                 norma: normaSelect.value,
@@ -2813,7 +3002,11 @@
                     audit: auditResp.data.audit,
                     auditJson: auditResp.data.auditJson,
                     optimizedText: rewriteResp.data.optimizedText,
-                    title: `Capítulo ${chunkIndex}`,
+                    title: chunkMeta.isChapterStart
+                        ? (chunkMeta.chapterTitle || `Capítulo ${chunkIndex}`)
+                        : undefined,
+                    isChapterStart: chunkMeta.isChapterStart,
+                    chapterTitle: chunkMeta.chapterTitle,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
                 }),
@@ -2865,14 +3058,14 @@
                     if (thesisJob.cancelled) break;
 
                     thesisJob.current = i + 1;
-                    showThesisProgress(`Procesando capítulo ${i + 1} de ${chunks.length}…`);
+                    showThesisProgress(`Procesando fragmento ${i + 1} de ${chunks.length}…`);
                     await processThesisChunkAuto(chunks[i], session.id, i + 1, chunks.length);
                     await loadSessionDetails(session.id);
                     await refreshSessionsList(session.id);
                 }
 
                 if (thesisJob.cancelled) {
-                    learningPanel.innerHTML = '<p>Modo Tesis cancelado. Los capítulos ya procesados quedaron guardados.</p>';
+                    learningPanel.innerHTML = '<p>Modo Tesis cancelado. Los fragmentos ya procesados quedaron guardados.</p>';
                 } else {
                     activeChapterId = FULL_SESSION_VIEW_ID;
                     showFullSessionOptimized(activeSessionData.chapters);
@@ -2888,46 +3081,50 @@
             }
         }
 
-        async function exportActiveSessionDocx() {
+        async function exportActiveSession() {
             if (!activeSessionId || !activeSessionData?.chapters?.length) {
-                showError('Seleccioná una sesión con capítulos corregidos para exportar.');
+                showError('Seleccioná una sesión con fragmentos corregidos para exportar.');
                 return;
             }
 
-            exportDocxBtn.disabled = true;
-            showLoading('Generando entregable Word…', true);
+            const format = exportFormatSelect?.value || 'docx';
+            const endpoint = format === 'pdf' ? '/api/export/pdf' : '/api/export/docx';
+            const formatLabel = format === 'pdf' ? 'PDF' : 'Word';
+
+            exportBtn.disabled = true;
+            showLoading(`Generando entregable ${formatLabel}…`, true);
 
             try {
                 const author = window.prompt('Autor (opcional):', 'Autor') || 'Autor';
-                const authorLastName = window.prompt('Apellido para encabezado MLA (opcional):', '') || '';
+                const authorLastName = format === 'docx'
+                    ? (window.prompt('Apellido para encabezado MLA (opcional):', '') || '')
+                    : '';
                 const title = window.prompt('Título del trabajo (opcional):', activeSessionData.name) || activeSessionData.name;
 
-                const { response, data } = await apiJson('/api/export/docx', {
+                const payload = { sessionId: activeSessionId, title, author };
+                if (format === 'docx') payload.authorLastName = authorLastName;
+
+                const { response, data } = await apiJson(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        sessionId: activeSessionId,
-                        title,
-                        author,
-                        authorLastName,
-                    }),
+                    body: JSON.stringify(payload),
                 });
 
                 if (!response.ok) {
-                    showError(data.error || 'No se pudo generar el Word.');
+                    showError(data.error || `No se pudo generar el ${formatLabel}.`);
                     return;
                 }
 
                 learningPanel.innerHTML = `
                     <div class="chapter-saved-banner">
-                        Entregable generado: <strong>${escapeHtml(data.filename)}</strong>
+                        Entregable ${formatLabel} generado: <strong>${escapeHtml(data.filename)}</strong>
                         (${Math.round((data.bytes || 0) / 1024)} KB, ${escapeHtml(data.norma || '')})
                     </div>
                     <p><a href="${escapeHtml(data.downloadUrl)}" target="_blank" rel="noopener">⬇️ Descargar ${escapeHtml(data.filename)}</a></p>`;
             } catch (error) {
-                showError(error.message || 'Error al exportar Word.');
+                showError(error.message || `Error al exportar ${formatLabel}.`);
             } finally {
-                exportDocxBtn.disabled = false;
+                exportBtn.disabled = false;
             }
         }
 
@@ -3210,7 +3407,11 @@
             thesisUpload.click();
         });
 
-        exportDocxBtn.addEventListener('click', exportActiveSessionDocx);
+        exportBtn.addEventListener('click', exportActiveSession);
+        fragmentChapterStart?.addEventListener('change', () => {
+            if (!fragmentChapterTitle) return;
+            fragmentChapterTitle.classList.toggle('field-hidden', !fragmentChapterStart.checked);
+        });
 
         thesisUpload.addEventListener('change', function () {
             const file = this.files && this.files[0];

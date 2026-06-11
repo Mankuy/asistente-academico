@@ -1,0 +1,147 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const {
+  createSession,
+  addChapter,
+  deleteSession,
+} = require('./sessions_store');
+const {
+  buildSessionExportText,
+  assembleSessionBlocks,
+} = require('./docx_export');
+const {
+  extractAuditJSON,
+  quoteExistsInOriginal,
+  filterAcceptedSuggestions,
+} = require('./audit_json');
+const {
+  verifyRewriteIntegrity,
+  sanitizeOptimizedText,
+} = require('./integrity_verify');
+const { exportPdfEntregable } = require('./pdf_export');
+
+function runTests() {
+  console.log('=== Composer v2 — tests A → C → B ===\n');
+
+  const session = createSession({ name: 'Ensayo continuo' });
+  addChapter(session.id, {
+    originalText: 'Primer párrafo del documento con una idea central.',
+    audit: 'Auditoría 1',
+    optimizedText: 'Primer párrafo optimizado del documento con una idea central.',
+  });
+  addChapter(session.id, {
+    originalText: 'Segundo párrafo que continúa la misma línea argumental.',
+    audit: 'Auditoría 2',
+    optimizedText: 'Segundo párrafo optimizado que continúa la misma línea argumental.',
+  });
+  addChapter(session.id, {
+    originalText: 'Tercer párrafo de cierre.',
+    audit: 'Auditoría 3',
+    optimizedText: 'Tercer párrafo optimizado de cierre.',
+  });
+
+  const reloaded = require('./sessions_store').getSession(session.id);
+  const exportText = buildSessionExportText(reloaded);
+  assert.ok(!exportText.includes('Capítulo 1:'), 'sin encabezados automáticos');
+  assert.ok(!exportText.includes('---'), 'sin separadores ---');
+  assert.ok(exportText.includes('Primer párrafo optimizado'), 'fragmento 1 presente');
+  assert.ok(exportText.includes('Tercer párrafo optimizado'), 'fragmento 3 presente');
+
+  addChapter(session.id, {
+    originalText: 'Inicio del marco teórico con varias fuentes.',
+    audit: 'Auditoría marco',
+    optimizedText: 'Inicio del marco teórico optimizado con varias fuentes.',
+    isChapterStart: true,
+    chapterTitle: 'Marco Teórico',
+  });
+
+  const withChapter = require('./sessions_store').getSession(session.id);
+  const blocks = assembleSessionBlocks(withChapter.chapters);
+  const headings = blocks.segments.filter((s) => s.type === 'heading');
+  assert.strictEqual(headings.length, 1, 'un solo encabezado marcado');
+  assert.strictEqual(headings[0].title, 'Marco Teórico');
+
+  const original = 'Según (García, 2019), la Ley N° 24521 regula el 45% de los casos.';
+  const auditRaw = JSON.stringify({
+    resumen: 'Hay un posible error de cita.',
+    veredicto: 'apto_con_reservas',
+    sugerencias: [{
+      id: 's1',
+      quote: '(García, 2019)',
+      replacement: '(García, 2018)',
+      explanation: 'Año incorrecto',
+      norm_ref: 'APA 7ª',
+      severity: 'IMPORTANTE',
+    }],
+    checklist: [],
+    biblio_check: [],
+  });
+
+  const audit = extractAuditJSON(auditRaw, original);
+  assert.strictEqual(audit.auditJson.sugerencias[0].quote_verified, true);
+
+  const fakeQuoteAudit = extractAuditJSON(JSON.stringify({
+    resumen: 'x',
+    veredicto: 'apto',
+    sugerencias: [{
+      id: 's9',
+      quote: 'texto que no existe en el original',
+      replacement: 'otro',
+      explanation: 'test',
+      norm_ref: 'APA',
+      severity: 'MENOR',
+    }],
+    checklist: [],
+    biblio_check: [],
+  }), original);
+  assert.strictEqual(fakeQuoteAudit.auditJson.sugerencias[0].quote_verified, false);
+  assert.strictEqual(quoteExistsInOriginal('(García, 2019)', original), true);
+
+  const filtered = filterAcceptedSuggestions(audit.auditJson, ['s1']);
+  assert.strictEqual(filtered.sugerencias.length, 1);
+
+  const integrityOk = verifyRewriteIntegrity(original, original);
+  assert.strictEqual(integrityOk.ok, true);
+
+  const mutated = 'Según García (2020), la Ley N° 99999 regula el 45% de los casos.';
+  const integrityFail = verifyRewriteIntegrity(original, mutated);
+  assert.strictEqual(integrityFail.ok, false);
+  assert.ok(integrityFail.citas_alteradas.length >= 1 || integrityFail.datos_alterados.length >= 1);
+
+  const sanitized = sanitizeOptimizedText('texto\u200Bcon\u0430homoglyph');
+  assert.ok(!sanitized.includes('\u200B'));
+
+  deleteSession(session.id);
+  console.log('✓ Tests Composer v2 (A+C lógica) OK');
+}
+
+async function runPdfSmoke() {
+  const session = createSession({ name: 'PDF smoke' });
+  addChapter(session.id, {
+    originalText: 'Párrafo con tilde: introducción académica.',
+    audit: 'ok',
+    optimizedText: 'Párrafo optimizado con tilde: introducción académica.\n\n### Referencias Bibliográficas\nGarcía, A. (2020). Título. Editorial.',
+  });
+
+  const fullSession = require('./sessions_store').getSession(session.id);
+  const result = await exportPdfEntregable({
+    session: fullSession,
+    norma: 'APA 7ª ed.',
+    title: 'Prueba PDF',
+    author: 'Autor Prueba',
+    sessionName: 'PDF smoke',
+  });
+
+  assert.ok(fs.existsSync(result.filePath), 'pdf file exists');
+  assert.ok(result.bytes > 500, 'pdf has content');
+  fs.unlinkSync(result.filePath);
+  deleteSession(session.id);
+  console.log('✓ Test export PDF smoke OK');
+}
+
+runTests();
+runPdfSmoke().catch((err) => {
+  console.error('✗', err);
+  process.exit(1);
+});

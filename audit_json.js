@@ -39,6 +39,41 @@ function normalizeVeredicto(value) {
   return 'apto_con_reservas';
 }
 
+function normalizeQuoteMatchText(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[\u2018\u2019\u201C\u201D«»]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function quoteExistsInOriginal(quote, originalText) {
+  const rawQuote = sanitizeZeroWidth(quote || '').trim();
+  if (!rawQuote || rawQuote === '(fragmento no citado)') return false;
+
+  const original = String(originalText || '');
+  if (original.includes(rawQuote)) return true;
+
+  const normalizedQuote = normalizeQuoteMatchText(rawQuote);
+  const normalizedOriginal = normalizeQuoteMatchText(original);
+  return normalizedQuote.length > 2 && normalizedOriginal.includes(normalizedQuote);
+}
+
+function verifyQuotesInAudit(auditJson, originalText) {
+  if (!auditJson || !Array.isArray(auditJson.sugerencias) || !originalText) return auditJson;
+
+  return {
+    ...auditJson,
+    sugerencias: auditJson.sugerencias.map((item) => ({
+      ...item,
+      quote_verified: quoteExistsInOriginal(item.quote, originalText),
+    })),
+  };
+}
+
 function normalizeSuggestion(item, index) {
   if (!item || typeof item !== 'object') return null;
   const quote = sanitizeZeroWidth(item.quote || item.fragmento || item.original || '').trim();
@@ -54,6 +89,7 @@ function normalizeSuggestion(item, index) {
     explanation: explanation || 'Sin justificación provista.',
     norm_ref: normRef || 'Rigor académico general',
     severity: normalizeSeverity(item.severity || item.severidad),
+    quote_verified: true,
   };
 }
 
@@ -83,15 +119,18 @@ function normalizeAuditJson(parsed) {
   };
 }
 
-function extractAuditJSON(rawText) {
+function extractAuditJSON(rawText, originalText = null) {
   const auditRaw = sanitizeZeroWidth(String(rawText || ''));
   const jsonSlice = extractJsonSubstring(auditRaw);
 
   if (jsonSlice) {
     try {
       const parsed = JSON.parse(jsonSlice);
-      const auditJson = normalizeAuditJson(parsed);
+      let auditJson = normalizeAuditJson(parsed);
       if (auditJson) {
+        if (originalText) {
+          auditJson = verifyQuotesInAudit(auditJson, originalText);
+        }
         return {
           auditMode: 'json',
           auditRaw,
@@ -183,4 +222,7 @@ module.exports = {
   formatAuditForRewrite,
   filterAcceptedSuggestions,
   normalizeAuditJson,
+  quoteExistsInOriginal,
+  verifyQuotesInAudit,
+  normalizeQuoteMatchText,
 };

@@ -177,10 +177,15 @@ function addChapter(sessionId, payload = {}) {
     throw new Error('Capítulo incompleto: se requiere originalText, audit y optimizedText.');
   }
 
+  const isChapterStart = Boolean(payload.isChapterStart);
+  const chapterTitle = isChapterStart ? sanitizeLine(payload.chapterTitle) : '';
+
   const chapter = {
     id: generateId(),
     index: chapterIndex,
-    title: sanitizeLine(payload.title) || deriveTitleFromText(originalText, CHAPTER_TITLE_MAX) || `Capítulo ${chapterIndex}`,
+    title: sanitizeLine(payload.title) || deriveTitleFromText(originalText, CHAPTER_TITLE_MAX) || `Fragmento ${chapterIndex}`,
+    isChapterStart,
+    chapterTitle,
     originalText,
     audit,
     auditJson: payload.auditJson && typeof payload.auditJson === 'object' ? payload.auditJson : null,

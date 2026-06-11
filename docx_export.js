@@ -44,6 +44,70 @@ function splitBodyAndReferences(text) {
   };
 }
 
+function getSortedFragments(chapters) {
+  return [...(chapters || [])].sort((a, b) => (a.index || 0) - (b.index || 0));
+}
+
+function assembleSessionBlocks(chapters) {
+  const sorted = getSortedFragments(chapters);
+  let markedChapterNum = 0;
+  const segments = [];
+
+  for (const fragment of sorted) {
+    if (Boolean(fragment.isChapterStart)) {
+      markedChapterNum += 1;
+      const title = String(fragment.chapterTitle || '').trim() || `Capítulo ${markedChapterNum}`;
+      segments.push({ type: 'heading', title });
+    }
+
+    const body = splitBodyAndReferences(fragment.optimizedText || '').body;
+    if (body) {
+      segments.push({ type: 'body', text: body });
+    }
+  }
+
+  const references = sorted
+    .map((fragment) => splitBodyAndReferences(fragment.optimizedText || '').references)
+    .filter(Boolean)
+    .pop() || '';
+
+  return { segments, references };
+}
+
+function buildSessionExportText(session) {
+  const { segments, references } = assembleSessionBlocks(session?.chapters || []);
+  const parts = segments.map((segment) => (
+    segment.type === 'heading' ? segment.title : segment.text
+  ));
+
+  let combined = parts.filter(Boolean).join('\n\n');
+  if (references) {
+    combined += `\n\n### Referencias Bibliográficas\n\n${references}`;
+  }
+  return combined;
+}
+
+function headingParagraph(title, norma) {
+  const isApa = String(norma || '').startsWith('APA');
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { before: isApa ? 320 : 240, after: 240 },
+    children: [new TextRun({ text: title, bold: true, size: isApa ? 28 : 26 })],
+  });
+}
+
+function buildBodyFromSegments(segments, norma) {
+  const children = [];
+  for (const segment of segments) {
+    if (segment.type === 'heading') {
+      children.push(headingParagraph(segment.title, norma));
+      continue;
+    }
+    children.push(...bodyParagraphs(segment.text, norma));
+  }
+  return children;
+}
+
 function paragraphFromLine(line, options = {}) {
   return new Paragraph({
     alignment: options.alignment,
@@ -157,8 +221,78 @@ function buildGenericDocument({ title, author, body, references }) {
   return new Document({ sections: [{ children }] });
 }
 
+function buildApaDocumentFromSegments({ title, author, segments, references }) {
+  const children = [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 400 },
+      children: [new TextRun({ text: title, bold: true, size: 32 })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 800 },
+      children: [new TextRun({ text: author, size: 26 })],
+    }),
+    new Paragraph({ children: [new PageBreak()] }),
+    ...buildBodyFromSegments(segments, 'APA'),
+  ];
+
+  if (references) {
+    children.push(new Paragraph({
+      spacing: { before: 400, after: 200 },
+      children: [new TextRun({ text: 'Referencias', bold: true, size: 26 })],
+    }));
+    children.push(...referenceParagraphs(references, 'APA'));
+  }
+
+  return new Document({ sections: [{ children }] });
+}
+
+function buildMlaDocumentFromSegments({ title, author, authorLastName, segments, references }) {
+  const lastName = authorLastName || author.split(/\s+/).pop() || 'Autor';
+  const children = [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 300 },
+      children: [new TextRun({ text: author, size: 24 })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 200 },
+      children: [new TextRun({ text: title, bold: true, size: 28 })],
+    }),
+    new Paragraph({ children: [new PageBreak()] }),
+    ...buildBodyFromSegments(segments, 'MLA'),
+  ];
+
+  if (references) {
+    children.push(new Paragraph({
+      spacing: { before: 400, after: 200 },
+      children: [new TextRun({ text: 'Works Cited', bold: true, size: 26 })],
+    }));
+    children.push(...referenceParagraphs(references, 'MLA'));
+  }
+
+  return new Document({
+    sections: [{
+      headers: {
+        default: new Header({
+          children: [
+            new Paragraph({
+              alignment: AlignmentType.RIGHT,
+              children: [new TextRun({ text: `${lastName} `, size: 22 })],
+            }),
+          ],
+        }),
+      },
+      children,
+    }],
+  });
+}
+
 async function exportDocxEntregable({
   text,
+  session = null,
   norma = 'APA 7ª ed.',
   title = 'Trabajo académico',
   author = 'Autor',
@@ -166,16 +300,28 @@ async function exportDocxEntregable({
   sessionName = '',
 }) {
   ensureEntregablesDir();
-  const { body, references } = splitBodyAndReferences(text);
   const docTitle = title || sessionName || 'Trabajo académico';
 
   let document;
-  if (norma.startsWith('MLA')) {
-    document = buildMlaDocument({ title: docTitle, author, authorLastName, body, references });
-  } else if (norma.startsWith('APA')) {
-    document = buildApaDocument({ title: docTitle, author, body, references });
+  if (session?.chapters?.length) {
+    const { segments, references } = assembleSessionBlocks(session.chapters);
+    if (norma.startsWith('MLA')) {
+      document = buildMlaDocumentFromSegments({ title: docTitle, author, authorLastName, segments, references });
+    } else if (norma.startsWith('APA')) {
+      document = buildApaDocumentFromSegments({ title: docTitle, author, segments, references });
+    } else {
+      const body = segments.map((s) => (s.type === 'heading' ? s.title : s.text)).join('\n\n');
+      document = buildGenericDocument({ title: docTitle, author, body, references });
+    }
   } else {
-    document = buildGenericDocument({ title: docTitle, author, body, references });
+    const { body, references } = splitBodyAndReferences(text);
+    if (norma.startsWith('MLA')) {
+      document = buildMlaDocument({ title: docTitle, author, authorLastName, body, references });
+    } else if (norma.startsWith('APA')) {
+      document = buildApaDocument({ title: docTitle, author, body, references });
+    } else {
+      document = buildGenericDocument({ title: docTitle, author, body, references });
+    }
   }
 
   const buffer = await Packer.toBuffer(document);
@@ -196,19 +342,13 @@ async function exportDocxEntregable({
   };
 }
 
-function buildSessionExportText(session) {
-  const chapters = [...(session.chapters || [])].sort((a, b) => a.index - b.index);
-  return chapters.map((chapter) => {
-    const header = `Capítulo ${chapter.index}: ${chapter.title}`;
-    return `${header}\n\n${chapter.optimizedText}`;
-  }).join('\n\n---\n\n');
-}
-
 module.exports = {
   ENTREGABLES_DIR,
   ensureEntregablesDir,
   safeEntregablePath,
   exportDocxEntregable,
   buildSessionExportText,
+  assembleSessionBlocks,
+  getSortedFragments,
   splitBodyAndReferences,
 };
