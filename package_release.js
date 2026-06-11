@@ -9,6 +9,7 @@ const ZIP_PATH = path.join(ROOT, 'Asistente_Academico_V1.zip');
 const FILES_TO_COPY = [
   'backend_academico.js',
   'sessions_store.js',
+  'guardian.js',
   'package.json',
   'iniciar_asistente.bat',
 ];
@@ -22,7 +23,9 @@ const ENV_EXAMPLE = [
   '# Banco de keys y modelos (JSON). Se completa desde ⚙️ en la interfaz.',
   'LLM_KEYS_JSON={}',
   'LLM_MODELS_JSON={}',
+  'LLM_FAST_MODELS_JSON={}',
   'LLM_BASE_URLS_JSON={}',
+  'COST_CONFIRM_THRESHOLD_USD=0.10',
   '',
   '# Legacy (opcional):',
   '# LLM_API_KEY=',

@@ -762,6 +762,20 @@
             font-size: 0.85rem;
             line-height: 1.55;
         }
+        .cost-confirm-banner {
+            background: rgba(180, 83, 9, 0.1);
+            border: 1px solid rgba(180, 83, 9, 0.3);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.85rem;
+        }
+        .cost-confirm-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.6rem;
+            flex-wrap: wrap;
+        }
         .chapter-saved-banner {
             background: rgba(25, 135, 84, 0.12);
             color: var(--status-ok);
@@ -973,9 +987,16 @@
         </select>
         <label for="llm-base-url" id="llm-base-url-label" class="field-optional-url field-hidden">URL base del endpoint</label>
         <input id="llm-base-url" class="field-optional-url" type="url" placeholder="http://localhost:11434/v1/chat/completions" autocomplete="off" hidden>
-        <label for="llm-model">Modelo LLM</label>
+        <label for="llm-model">Modelo LLM (principal)</label>
         <input id="llm-model" type="text" list="model-suggestions" placeholder="openrouter/owl-alpha" autocomplete="off">
         <datalist id="model-suggestions"></datalist>
+        <label for="llm-fast-model">Modelo económico (guardián)</label>
+        <input id="llm-fast-model" type="text" list="fast-model-suggestions" placeholder="gpt-4o-mini" autocomplete="off">
+        <datalist id="fast-model-suggestions"></datalist>
+        <p class="settings-help">El guardián clasifica intención sospechosa con este modelo barato antes de gastar el modelo principal.</p>
+        <label for="cost-threshold">Umbral de confirmación de costo (USD)</label>
+        <input id="cost-threshold" type="number" min="0" max="100" step="0.01" placeholder="0.10">
+        <p class="settings-help">Si el análisis estimado supera este monto, el frontend pedirá confirmación.</p>
         <label for="llm-key-active" id="llm-key-active-label">API Key del proveedor activo</label>
         <input id="llm-key-active" type="password" placeholder="Pegá la API Key (vacío = mantener la guardada)" autocomplete="off">
         <details class="keys-vault" id="keys-vault" open>
@@ -1067,6 +1088,9 @@
         const settingsFeedback = document.getElementById('settings-feedback');
         const llmProviderSelect = document.getElementById('llm-provider');
         const llmModelInput = document.getElementById('llm-model');
+        const llmFastModelInput = document.getElementById('llm-fast-model');
+        const fastModelSuggestions = document.getElementById('fast-model-suggestions');
+        const costThresholdInput = document.getElementById('cost-threshold');
         const llmBaseUrlInput = document.getElementById('llm-base-url');
         const llmBaseUrlLabel = document.getElementById('llm-base-url-label');
         const providerDocsLink = document.getElementById('provider-docs-link');
@@ -1092,6 +1116,26 @@
             nvidia: ['meta/llama-3.1-70b-instruct', 'meta/llama-3.3-70b-instruct', 'nvidia/llama-3.3-nemotron-super-49b-v1', 'mistralai/mixtral-8x7b-instruct'],
             azure: ['gpt-4o-mini', 'gpt-4o', 'gpt-35-turbo'],
             local: ['llama3.2', 'llama3.1', 'mistral', 'phi3', 'qwen2.5'],
+            custom: [],
+        };
+
+        const PROVIDER_FAST_MODELS = {
+            openrouter: ['openai/gpt-4o-mini', 'google/gemini-2.0-flash', 'meta-llama/llama-3.1-8b-instruct'],
+            openai: ['gpt-4o-mini', 'gpt-3.5-turbo'],
+            anthropic: ['claude-3-5-haiku-20241022'],
+            groq: ['llama-3.1-8b-instant'],
+            nous: ['hermes-3-llama-3.1-70b'],
+            google: ['gemini-2.0-flash', 'gemini-1.5-flash'],
+            mistral: ['mistral-small-latest'],
+            together: ['meta-llama/Llama-3-8b-chat-hf'],
+            deepseek: ['deepseek-chat'],
+            cohere: ['command-light'],
+            perplexity: ['sonar'],
+            fireworks: ['accounts/fireworks/models/llama-v3p1-8b-instruct'],
+            xai: ['grok-2-latest'],
+            nvidia: ['meta/llama-3.1-8b-instruct'],
+            azure: ['gpt-4o-mini'],
+            local: ['llama3.2', 'phi3'],
             custom: [],
         };
 
@@ -1162,6 +1206,16 @@
         function updateModelSuggestions(providerId) {
             const models = PROVIDER_MODELS[providerId] || [];
             modelSuggestions.innerHTML = models.map((m) => `<option value="${m}"></option>`).join('');
+            const fastModels = PROVIDER_FAST_MODELS[providerId] || [];
+            if (fastModelSuggestions) {
+                fastModelSuggestions.innerHTML = fastModels.map((m) => `<option value="${m}"></option>`).join('');
+            }
+        }
+
+        function getSavedFastModelForProvider(providerId) {
+            return currentConfig.savedFastModels?.[providerId]
+                || PROVIDER_FAST_MODELS[providerId]?.[0]
+                || getSavedModelForProvider(providerId);
         }
 
         function getSavedModelForProvider(providerId) {
@@ -1270,6 +1324,10 @@
                 llmModelInput.value = savedModel;
             }
             llmModelInput.placeholder = savedModel || meta.model || 'nombre-del-modelo';
+            if (llmFastModelInput) {
+                llmFastModelInput.value = getSavedFastModelForProvider(providerId);
+                llmFastModelInput.placeholder = getSavedFastModelForProvider(providerId);
+            }
         }
 
         function setSettingsStatus(configured, maskedKey, model, providerLabel) {
@@ -1293,6 +1351,12 @@
             llmProviderSelect.value = providerId;
             updateProviderUI(providerId, true);
             llmModelInput.value = currentConfig.model || getSavedModelForProvider(providerId);
+            if (llmFastModelInput) {
+                llmFastModelInput.value = currentConfig.fastModel || getSavedFastModelForProvider(providerId);
+            }
+            if (costThresholdInput) {
+                costThresholdInput.value = currentConfig.costConfirmThresholdUsd ?? 0.1;
+            }
             llmBaseUrlInput.value = currentConfig.baseUrl || getSavedBaseUrlForProvider(providerId);
             buildKeysVault(getVaultProviders());
             updateActiveKeyField(providerId);
@@ -1332,10 +1396,13 @@
                         maskedKey: data.maskedKey,
                         maskedKeys,
                         savedModels: data.savedModels || {},
+                        savedFastModels: data.savedFastModels || {},
                         savedBaseUrls: data.savedBaseUrls || {},
                         providersList: data.providers || [],
                         legacyApi,
                         model: data.model || data.defaultModel || 'openrouter/owl-alpha',
+                        fastModel: data.fastModel || data.model || 'gpt-4o-mini',
+                        costConfirmThresholdUsd: data.costConfirmThresholdUsd ?? 0.1,
                         provider: data.provider || 'openrouter',
                         providerLabel: data.providerLabel || 'OpenRouter',
                         baseUrl: data.baseUrl || '',
@@ -1357,8 +1424,10 @@
             }
         }
 
-        function buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey) {
+        function buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey, fastModel, costThreshold) {
             const keyForProvider = apiKeys[provider] || activeKey || '';
+            const fastModels = { ...(currentConfig.savedFastModels || {}) };
+            if (fastModel) fastModels[provider] = fastModel;
             if (currentConfig.legacyApi) {
                 return {
                     openRouterApiKey: keyForProvider,
@@ -1369,6 +1438,9 @@
             return {
                 provider,
                 model,
+                fastModel,
+                fastModels,
+                costConfirmThresholdUsd: costThreshold,
                 openRouterModel: model,
                 baseUrl,
                 apiKeys,
@@ -1379,6 +1451,8 @@
         async function saveConfig() {
             const provider = llmProviderSelect.value;
             const model = llmModelInput.value.trim();
+            const fastModel = llmFastModelInput ? llmFastModelInput.value.trim() : '';
+            const costThreshold = costThresholdInput ? Number(costThresholdInput.value) : 0.1;
             const baseUrl = llmBaseUrlInput.value.trim();
             const meta = PROVIDER_DEFAULTS[provider] || PROVIDER_DEFAULTS.openrouter;
 
@@ -1419,7 +1493,7 @@
                 const response = await fetch('/api/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey))
+                    body: JSON.stringify(buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey, fastModel, costThreshold))
                 });
                 const data = await response.json().catch(() => ({}));
 
@@ -1442,8 +1516,11 @@
                     maskedKey: data.maskedKey,
                     maskedKeys: data.maskedKeys || currentConfig.maskedKeys,
                     savedModels: data.savedModels || currentConfig.savedModels,
+                    savedFastModels: data.savedFastModels || currentConfig.savedFastModels,
                     savedBaseUrls: data.savedBaseUrls || currentConfig.savedBaseUrls,
                     model: data.model || model,
+                    fastModel: data.fastModel || fastModel,
+                    costConfirmThresholdUsd: data.costConfirmThresholdUsd ?? costThreshold,
                     provider: data.provider || provider,
                     providerLabel: data.providerLabel || llmProviderSelect.selectedOptions[0]?.textContent || provider,
                     baseUrl: data.baseUrl || baseUrl,
@@ -1716,12 +1793,51 @@
         }
 
         function handleStageError(result, phaseLabel) {
+            if (result.response.status === 402 && result.data?.requiresConfirmation) {
+                showCostConfirmation(result.data, lastAnalysisContext?.text);
+                return;
+            }
             const message = formatApiError(result.response, result.data);
             const retryable = isRetryableApiData(result.data, result.response.status);
             const retryHint = retryable
                 ? 'El proveedor pidió esperar. Podés reintentar manualmente o aguardar unos segundos.'
                 : '';
             showError(message, { retryable, retryHint });
+        }
+
+        function showCostConfirmation(estimateData, text) {
+            const estimate = Number(estimateData.estimateUsd || 0).toFixed(4);
+            const threshold = Number(estimateData.thresholdUsd || 0).toFixed(2);
+            learningPanel.innerHTML = `
+                <div class="cost-confirm-banner">
+                    <strong>Estimación de costo</strong>
+                    <p>Este análisis (2 fases) costaría aprox. <strong>USD ${estimate}</strong> con <code>${escapeHtml(estimateData.model || '')}</code>.</p>
+                    <p>Tu umbral configurado es USD ${threshold}. ¿Continuar?</p>
+                    <div class="cost-confirm-actions">
+                        <button type="button" class="btn btn-primary" id="cost-confirm-yes">Sí, continuar</button>
+                        <button type="button" class="btn" id="cost-confirm-no">Cancelar</button>
+                    </div>
+                </div>`;
+
+            document.getElementById('cost-confirm-yes')?.addEventListener('click', () => {
+                if (text) fetchSuggestion(text, { costConfirmed: true, forceRetry: true });
+            });
+            document.getElementById('cost-confirm-no')?.addEventListener('click', () => {
+                learningPanel.innerHTML = '<p>Análisis cancelado. Podés acortar el texto o subir el umbral en ⚙️.</p>';
+            });
+        }
+
+        async function checkCostBeforeAnalysis(text, sessionId) {
+            const { response, data } = await apiJson('/api/estimate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, sessionId }),
+            });
+            if (!response.ok) return { proceed: true };
+            if (data.requiresConfirmation) {
+                return { proceed: false, estimateData: data };
+            }
+            return { proceed: true, estimateData: data };
         }
 
         async function apiJson(url, options = {}) {
@@ -2039,9 +2155,19 @@
                 norma: normaSelect.value,
                 nivel: nivelSelect.value,
                 sessionId,
+                costConfirmed: Boolean(options.costConfirmed),
             };
 
             try {
+                if (!options.costConfirmed) {
+                    const costCheck = await checkCostBeforeAnalysis(text, sessionId);
+                    if (!costCheck.proceed) {
+                        analysisInFlight = false;
+                        showCostConfirmation(costCheck.estimateData, text);
+                        return;
+                    }
+                }
+
                 showLoading('Fase 1: Auditando normativa y estructura…', true);
 
                 const auditPayload = {
@@ -2051,6 +2177,7 @@
                     stage: 'audit',
                 };
                 if (sessionId) auditPayload.sessionId = sessionId;
+                if (options.costConfirmed) auditPayload.costConfirmed = true;
 
                 const auditResult = await postSuggestStageWithRetry(auditPayload, 'Fase 1');
 
@@ -2127,6 +2254,7 @@
             const providerId = llmProviderSelect.value;
             updateProviderUI(providerId, false);
             llmModelInput.value = getSavedModelForProvider(providerId);
+            if (llmFastModelInput) llmFastModelInput.value = getSavedFastModelForProvider(providerId);
             llmBaseUrlInput.value = getSavedBaseUrlForProvider(providerId);
             updateActiveKeyField(providerId);
         });

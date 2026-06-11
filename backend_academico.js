@@ -13,6 +13,12 @@ const {
   deleteChapter,
   buildSessionContextForLlm,
 } = require('./sessions_store');
+const {
+  GUARDIAN_SYSTEM_PROMPT,
+  classifyIntentRegex,
+  parseGuardianJson,
+  estimateCostUsd,
+} = require('./guardian');
 
 const ENV_PATH = path.join(__dirname, '.env');
 
@@ -274,7 +280,9 @@ const CONFIG = {
   LLM_BASE_URL: '',
   LLM_KEYS_JSON: '{}',
   LLM_MODELS_JSON: '{}',
+  LLM_FAST_MODELS_JSON: '{}',
   LLM_BASE_URLS_JSON: '{}',
+  COST_CONFIRM_THRESHOLD_USD: '0.10',
 };
 
 function getLlmProvider(providerId) {
@@ -333,6 +341,24 @@ function loadLlmModelsStore() {
     models[legacyProvider] = legacyModel;
   }
   return models;
+}
+
+function loadLlmFastModelsStore() {
+  return parseJsonEnv('LLM_FAST_MODELS_JSON', {});
+}
+
+function getLlmFastModel(providerId = getLlmProviderId()) {
+  const fastModels = loadLlmFastModelsStore();
+  const fast = (fastModels[providerId] || '').trim();
+  if (fast) return fast;
+  return getLlmModel(providerId);
+}
+
+function getCostConfirmThreshold() {
+  const raw = (process.env.COST_CONFIRM_THRESHOLD_USD || CONFIG.COST_CONFIRM_THRESHOLD_USD || '0.10').trim();
+  const value = Number(raw);
+  if (Number.isNaN(value) || value < 0) return 0.1;
+  return value;
 }
 
 function loadLlmBaseUrlsStore() {
@@ -431,12 +457,12 @@ function buildProviderHeaders(providerId, apiKey) {
 const LLM_MAX_TOKENS_AUDIT = 8000;
 const LLM_MAX_TOKENS_REWRITE = 10000;
 
-function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens = LLM_MAX_TOKENS_REWRITE) {
+function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens = LLM_MAX_TOKENS_REWRITE, temperature = 0.3) {
   if (providerId === 'anthropic') {
     return {
       model,
       max_tokens: maxTokens,
-      temperature: 0.3,
+      temperature,
       system: systemPrompt,
       messages: [{ role: 'user', content: userText }],
     };
@@ -445,7 +471,7 @@ function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxToken
   if (providerId === 'cohere') {
     return {
       model,
-      temperature: 0.3,
+      temperature,
       max_tokens: maxTokens,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -460,9 +486,19 @@ function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxToken
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userText },
     ],
-    temperature: 0.3,
+    temperature,
     max_tokens: maxTokens,
   };
+}
+
+function normalizeLlmCallOpts(opts = {}) {
+  if (typeof opts === 'number') {
+    return { maxTokens: opts };
+  }
+  if (!opts || typeof opts !== 'object') {
+    return {};
+  }
+  return opts;
 }
 
 function extractLlmContent(providerId, data) {
@@ -531,11 +567,14 @@ function computeRetryDelayMs(attempt, retryAfterMs) {
   return exponential + jitter;
 }
 
-async function callLlmOnce(systemPrompt, userText, maxTokens = LLM_MAX_TOKENS_REWRITE) {
+async function callLlmOnce(systemPrompt, userText, opts = {}) {
+  const callOpts = normalizeLlmCallOpts(opts);
+  const maxTokens = callOpts.maxTokens ?? LLM_MAX_TOKENS_REWRITE;
+  const temperature = callOpts.temperature ?? 0.3;
   const providerId = getLlmProviderId();
   const provider = getLlmProvider(providerId);
   const apiKey = getLlmApiKey();
-  const model = getLlmModel();
+  const model = callOpts.model ?? getLlmModel();
   const endpoint = getLlmBaseUrl();
 
   if (!provider.keyOptional && !apiKey) {
@@ -560,12 +599,14 @@ async function callLlmOnce(systemPrompt, userText, maxTokens = LLM_MAX_TOKENS_RE
     response = await fetch(endpoint, {
       method: 'POST',
       headers: buildProviderHeaders(providerId, apiKey),
-      body: JSON.stringify(buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens)),
+      body: JSON.stringify(buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens, temperature)),
+      signal: AbortSignal.timeout(120000),
     });
   } catch (networkErr) {
+    const isTimeout = networkErr.name === 'AbortError' || networkErr.name === 'TimeoutError';
     throw new ApiError(
-      `No se pudo conectar con ${provider.label}`,
-      502,
+      isTimeout ? `Tiempo de espera agotado (${provider.label})` : `No se pudo conectar con ${provider.label}`,
+      isTimeout ? 504 : 502,
       networkErr.message,
       { retryable: true }
     );
@@ -609,13 +650,14 @@ async function callLlmOnce(systemPrompt, userText, maxTokens = LLM_MAX_TOKENS_RE
   return content;
 }
 
-async function callLlm(systemPrompt, userText, maxTokens = LLM_MAX_TOKENS_REWRITE) {
+async function callLlm(systemPrompt, userText, opts = {}) {
+  const callOpts = normalizeLlmCallOpts(opts);
   const provider = getLlmProvider(getLlmProviderId());
   let lastError = null;
 
   for (let attempt = 1; attempt <= LLM_RETRY_MAX_ATTEMPTS; attempt++) {
     try {
-      return await callLlmOnce(systemPrompt, userText, maxTokens);
+      return await callLlmOnce(systemPrompt, userText, callOpts);
     } catch (err) {
       lastError = err;
       const canRetry = err instanceof ApiError && err.retryable && attempt < LLM_RETRY_MAX_ATTEMPTS;
@@ -708,40 +750,6 @@ Recibirás el texto original del usuario Y el informe de auditoría de la Fase 1
 
 const SYSTEM_PROMPT_V2_3 = SYSTEM_PROMPT_V3;
 
-const EVASION_PATTERNS = [
-  /\bevad(ir|ir|iendo|as?|ar)\b/i,
-  /\bturnitin\b/i,
-  /\bzerogpt\b/i,
-  /\banti.?plagio\b/i,
-  /\bdetector.?(de|de\s+)?(ia|ai|plagio)\b/i,
-  /\bbypass\b/i,
-  /\burlar\b/i,
-  /\bengañar\b/i,
-  /\bpasar\s+(por|desapercibido)\b/i,
-  /\breducir\s+(la\s+)?(probabilidad|posibilidad)\s+de\s+detección\b/i,
-  /\bhumanizar\s+(texto|contenido)\b/i,
-  /\breescribir\s+para\s+(que\s+)?no\s+(sea\s+)?detectado\b/i,
-];
-
-const INTENT_MAP = {
-  evasion: EVASION_PATTERNS,
-  academic_help: [
-    /\bmejorar\b/i,
-    /\bcorregir\b/i,
-    /\bap(a|a\s+7|7ª?)\b/i,
-    /\bml(a|a\s+9|9ª?)\b/i,
-    /\bchicago\b/i,
-    /\bparafrasear\b/i,
-    /\bcitar\b/i,
-    /\breferenciar\b/i,
-    /\bcoherencia\b/i,
-    /\bconcisión\b/i,
-    /\bestructura\b/i,
-    /\btesis\b/i,
-    /\bargumento\b/i,
-  ],
-};
-
 class ApiError extends Error {
   constructor(message, statusCode = 502, details = null, options = {}) {
     super(message);
@@ -754,20 +762,33 @@ class ApiError extends Error {
 }
 
 function classifyIntent(text) {
-  const normalized = text.toLowerCase().trim();
-
-  for (const [intent, patterns] of Object.entries(INTENT_MAP)) {
-    for (const pattern of patterns) {
-      if (pattern.test(normalized)) {
-        return intent;
-      }
-    }
-  }
-  return 'unknown';
+  return classifyIntentRegex(text);
 }
 
-function containsEvasionIntent(text) {
-  return classifyIntent(text) === 'evasion';
+async function classifyIntentLLM(text) {
+  const snippet = String(text || '').trim().slice(0, 600);
+  if (!snippet) return 'unknown';
+
+  try {
+    const raw = await callLlmOnce(GUARDIAN_SYSTEM_PROMPT, snippet, {
+      model: getLlmFastModel(),
+      maxTokens: 20,
+      temperature: 0,
+    });
+    return parseGuardianJson(raw).intent;
+  } catch (err) {
+    console.warn('[guardian] LLM fallback fail-open:', err.message || err);
+    return 'unknown';
+  }
+}
+
+async function containsEvasionIntent(text) {
+  const regexIntent = classifyIntentRegex(text);
+  if (regexIntent === 'evasion') return true;
+  if (regexIntent === 'academic_help') return false;
+
+  const llmIntent = await classifyIntentLLM(text);
+  return llmIntent === 'evasion';
 }
 
 const NORMATIVA_OPTIONS = ['APA 7ª ed.', 'MLA 9ª ed.', 'Chicago 17ª', 'Vancouver'];
@@ -898,12 +919,12 @@ async function buildRewriteUserText(inputText, norma, nivel, auditReport, sessio
 
 async function runAuditStage(inputText, norma, nivel, sessionContext = null) {
   const contextualizedText = await buildContextualizedUserText(inputText, norma, nivel, sessionContext);
-  return callLlm(AUDIT_SYSTEM_PROMPT_V3, contextualizedText, LLM_MAX_TOKENS_AUDIT);
+  return callLlm(AUDIT_SYSTEM_PROMPT_V3, contextualizedText, { maxTokens: LLM_MAX_TOKENS_AUDIT });
 }
 
 async function runRewriteStage(inputText, norma, nivel, auditReport, sessionContext = null) {
   const userText = await buildRewriteUserText(inputText, norma, nivel, auditReport, sessionContext);
-  return callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, LLM_MAX_TOKENS_REWRITE);
+  return callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, { maxTokens: LLM_MAX_TOKENS_REWRITE });
 }
 
 const configSaveSchema = Joi.object({
@@ -932,6 +953,16 @@ const configSaveSchema = Joi.object({
   openRouterModel: Joi.string().trim().min(1).max(300).optional(),
   openRouterApiKey: Joi.string().trim().allow('').max(500).optional(),
   baseUrl: Joi.string().trim().allow('').max(500).optional(),
+  fastModel: Joi.string().trim().allow('').max(300).optional(),
+  fastModels: Joi.object()
+    .pattern(Joi.string().valid(...LLM_PROVIDER_IDS), Joi.string().trim().allow('').max(300))
+    .optional(),
+  costConfirmThresholdUsd: Joi.number().min(0).max(100).optional(),
+}).options({ stripUnknown: true });
+
+const estimateSchema = Joi.object({
+  text: Joi.string().trim().min(1).max(5000000).required(),
+  sessionId: Joi.string().uuid().optional(),
 }).options({ stripUnknown: true });
 
 const suggestSchema = Joi.object({
@@ -961,6 +992,7 @@ const suggestSchema = Joi.object({
   stage: Joi.string().valid('audit', 'rewrite', 'full').optional(),
   audit: Joi.string().trim().min(1).max(5000000).optional(),
   sessionId: Joi.string().uuid().optional(),
+  costConfirmed: Joi.boolean().optional(),
 }).options({ stripUnknown: true });
 
 const sessionCreateSchema = Joi.object({
@@ -993,17 +1025,22 @@ app.get('/api/config', (req, res) => {
   const baseUrl = getLlmBaseUrl(providerId);
   const maskedKeys = getMaskedKeysForAllProviders();
   const savedModels = loadLlmModelsStore();
+  const savedFastModels = loadLlmFastModelsStore();
   const savedBaseUrls = loadLlmBaseUrlsStore();
+  const fastModel = getLlmFastModel(providerId);
 
   res.json({
     configured: isLlmConfigured(),
     maskedKey: maskApiKey(apiKey),
     maskedKeys,
     savedModels,
+    savedFastModels,
     savedBaseUrls,
     provider: providerId,
     providerLabel: provider.label,
     model,
+    fastModel,
+    costConfirmThresholdUsd: getCostConfirmThreshold(),
     baseUrl,
     defaultModel: provider.defaultModel,
     keyOptional: provider.keyOptional,
@@ -1060,6 +1097,7 @@ app.post('/api/config', asyncHandler(async (req, res) => {
   const provider = getLlmProvider(value.provider);
   const keys = loadLlmKeysStore();
   const models = loadLlmModelsStore();
+  const fastModels = loadLlmFastModelsStore();
   const baseUrls = loadLlmBaseUrlsStore();
 
   if (value.apiKeys && typeof value.apiKeys === 'object') {
@@ -1099,8 +1137,20 @@ app.post('/api/config', asyncHandler(async (req, res) => {
       baseUrls[value.provider] = value.baseUrl.trim();
     }
 
+    if (value.fastModels && typeof value.fastModels === 'object') {
+      for (const [providerId, fastValue] of Object.entries(value.fastModels)) {
+        if (fastValue && fastValue.trim()) {
+          fastModels[providerId] = fastValue.trim();
+        }
+      }
+    }
+    if (value.fastModel?.trim()) {
+      fastModels[value.provider] = value.fastModel.trim();
+    }
+
     saveJsonEnvVariable('LLM_KEYS_JSON', keys);
     saveJsonEnvVariable('LLM_MODELS_JSON', models);
+    saveJsonEnvVariable('LLM_FAST_MODELS_JSON', fastModels);
     saveJsonEnvVariable('LLM_BASE_URLS_JSON', baseUrls);
 
     saveEnvVariable('LLM_PROVIDER', value.provider);
@@ -1127,6 +1177,11 @@ app.post('/api/config', asyncHandler(async (req, res) => {
       saveEnvVariable('OPENROUTER_MODEL', models.openrouter);
     }
 
+    if (typeof value.costConfirmThresholdUsd === 'number') {
+      saveEnvVariable('COST_CONFIRM_THRESHOLD_USD', String(value.costConfirmThresholdUsd));
+      CONFIG.COST_CONFIRM_THRESHOLD_USD = String(value.costConfirmThresholdUsd);
+    }
+
     const maskedKeys = getMaskedKeysForAllProviders();
 
     return res.json({
@@ -1136,10 +1191,13 @@ app.post('/api/config', asyncHandler(async (req, res) => {
       maskedKey: maskApiKey(activeKey),
       maskedKeys,
       savedModels: models,
+      savedFastModels: fastModels,
       savedBaseUrls: baseUrls,
       provider: value.provider,
       providerLabel: provider.label,
       model: value.model,
+      fastModel: getLlmFastModel(value.provider),
+      costConfirmThresholdUsd: getCostConfirmThreshold(),
       baseUrl: nextBaseUrl,
     });
   } catch (writeErr) {
@@ -1149,6 +1207,35 @@ app.post('/api/config', asyncHandler(async (req, res) => {
       details: writeErr.message,
     });
   }
+}));
+
+app.post('/api/estimate', asyncHandler(async (req, res) => {
+  const { error, value } = estimateSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  const model = getLlmModel();
+  let sessionChapters = 0;
+  if (value.sessionId) {
+    const session = getSession(value.sessionId);
+    if (session?.chapters) sessionChapters = session.chapters.length;
+  }
+
+  const estimateUsd = estimateCostUsd(value.text.length, model, { sessionChapters });
+  const thresholdUsd = getCostConfirmThreshold();
+
+  return res.json({
+    estimateUsd,
+    thresholdUsd,
+    requiresConfirmation: estimateUsd > thresholdUsd,
+    model,
+    fastModel: getLlmFastModel(),
+    charCount: value.text.length,
+  });
 }));
 
 app.get('/api/sessions', asyncHandler(async (req, res) => {
@@ -1265,10 +1352,28 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       }
     }
 
-    if (containsEvasionIntent(inputText)) {
+    if (await containsEvasionIntent(inputText)) {
+      console.log('[api/suggest] Intención de evasión bloqueada (guardián)');
       return res.json({
         redirect: true,
         message: 'Por favor, enfócate en aprender de forma honesta. Puedo ayudarte a mejorar tu escritura siguiendo normas académicas (APA, MLA, Chicago) y principios de comunicación clara.',
+        blockedBy: 'guardian',
+      });
+    }
+
+    const sessionChapterCount = value.sessionId
+      ? (getSession(value.sessionId)?.chapters?.length || 0)
+      : 0;
+    const estimateUsd = estimateCostUsd(inputText.length, getLlmModel(), { sessionChapters: sessionChapterCount });
+    const thresholdUsd = getCostConfirmThreshold();
+
+    if (stage === 'audit' && estimateUsd > thresholdUsd && !value.costConfirmed) {
+      return res.status(402).json({
+        error: 'Confirmación de costo requerida',
+        details: `El análisis estimado cuesta ~USD ${estimateUsd.toFixed(4)} (umbral: USD ${thresholdUsd.toFixed(2)}).`,
+        estimateUsd,
+        thresholdUsd,
+        requiresConfirmation: true,
       });
     }
 
@@ -1377,15 +1482,18 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  const provider = getLlmProvider(getLlmProviderId());
-  const configured = isLlmConfigured();
-  console.log(`Servidor escuchando en http://localhost:${PORT}`);
-  console.log(`Proveedor LLM: ${provider.label} · Modelo: ${getLlmModel() || '(sin configurar)'}`);
-  if (!configured) {
-    console.warn('ADVERTENCIA: Proveedor LLM no configurado. Configuralo desde ⚙️ en el frontend.');
-  }
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    const provider = getLlmProvider(getLlmProviderId());
+    const configured = isLlmConfigured();
+    console.log(`Servidor escuchando en http://localhost:${PORT}`);
+    console.log(`Proveedor LLM: ${provider.label} · Modelo: ${getLlmModel() || '(sin configurar)'}`);
+    console.log(`Guardián (modelo económico): ${getLlmFastModel() || '(fallback al principal)'}`);
+    if (!configured) {
+      console.warn('ADVERTENCIA: Proveedor LLM no configurado. Configuralo desde ⚙️ en el frontend.');
+    }
+  });
+}
 
 module.exports = {
   app,
@@ -1394,4 +1502,10 @@ module.exports = {
   searchAcademicData,
   extractCitationQueries,
   buildSessionContextBlock,
+  classifyIntent,
+  classifyIntentLLM,
+  containsEvasionIntent,
+  estimateCostUsd,
+  getLlmFastModel,
+  callLlmOnce,
 };
