@@ -1836,7 +1836,8 @@
                             .join('');
                         data.providers.forEach((p) => {
                             if (!PROVIDER_DEFAULTS[p.id]) return;
-                            PROVIDER_DEFAULTS[p.id].model = p.defaultModel || PROVIDER_DEFAULTS[p.id].model;
+                            PROVIDER_DEFAULTS[p.id].model = p.savedModel || p.defaultModel || PROVIDER_DEFAULTS[p.id].model;
+                            if (p.savedFastModel) PROVIDER_DEFAULTS[p.id].fastModel = p.savedFastModel;
                             PROVIDER_DEFAULTS[p.id].keyOptional = p.keyOptional;
                             if (p.docsUrl) PROVIDER_DEFAULTS[p.id].docsUrl = p.docsUrl;
                         });
@@ -1869,10 +1870,22 @@
                         keyOptional: data.keyOptional || false,
                         bunkerMode: Boolean(data.bunkerMode),
                     };
+                    Object.entries(currentConfig.savedModels || {}).forEach(([providerId, modelName]) => {
+                        if (!PROVIDER_DEFAULTS[providerId] || !modelName) return;
+                        PROVIDER_DEFAULTS[providerId].model = modelName;
+                    });
+                    Object.entries(currentConfig.savedFastModels || {}).forEach(([providerId, fastModelName]) => {
+                        if (!PROVIDER_DEFAULTS[providerId] || !fastModelName) return;
+                        PROVIDER_DEFAULTS[providerId].fastModel = fastModelName;
+                    });
                     updateBunkerBadge(currentConfig.bunkerMode);
                     buildKeysVault(getVaultProviders());
                     llmProviderSelect.value = currentConfig.provider;
                     updateActiveKeyField(currentConfig.provider);
+                    llmModelInput.value = currentConfig.model || getSavedModelForProvider(loadedProviderId);
+                    if (llmFastModelInput) {
+                        llmFastModelInput.value = currentConfig.fastModel || getSavedFastModelForProvider(loadedProviderId);
+                    }
                     updateProviderUI(currentConfig.provider, true);
                     setSettingsStatus(
                         currentConfig.configured,
@@ -1993,7 +2006,16 @@
                 };
                 updateBunkerBadge(currentConfig.bunkerMode);
                 if (data.savedModels) {
-                    Object.assign(PROVIDER_DEFAULTS[provider] || {}, { model: data.model });
+                    Object.entries(data.savedModels).forEach(([providerId, modelName]) => {
+                        if (!PROVIDER_DEFAULTS[providerId] || !modelName) return;
+                        PROVIDER_DEFAULTS[providerId].model = modelName;
+                    });
+                }
+                if (data.savedFastModels) {
+                    Object.entries(data.savedFastModels).forEach(([providerId, fastModelName]) => {
+                        if (!PROVIDER_DEFAULTS[providerId] || !fastModelName) return;
+                        PROVIDER_DEFAULTS[providerId].fastModel = fastModelName;
+                    });
                 }
                 setSettingsStatus(
                     currentConfig.configured,

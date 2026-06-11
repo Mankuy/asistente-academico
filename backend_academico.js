@@ -1297,6 +1297,7 @@ app.get('/api/config', (req, res) => {
         hasKey: p.keyOptional ? true : Boolean(getLlmApiKey(id)),
         maskedKey: maskedKeys[id],
         savedModel: savedModels[id] || p.defaultModel,
+        savedFastModel: savedFastModels[id] || getDefaultFastModelForProvider(id),
         configured: isProviderConfigured(id),
       };
     }),
@@ -1946,6 +1947,10 @@ module.exports = {
   estimateCostUsd,
   estimateStageCostUsd,
   getLlmFastModel,
+  getLlmModel,
+  getDefaultFastModelForProvider,
+  loadLlmModelsStore,
+  loadLlmFastModelsStore,
   getBindHost,
   isBunkerMode,
   isLocalhostEndpoint,
