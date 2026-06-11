@@ -850,6 +850,80 @@
             border-color: var(--accent);
             box-shadow: 0 0 0 0.12rem var(--accent-ring);
         }
+        .chapter-item-fragment {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .chapter-item-label {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .chapter-item-actions {
+            display: flex;
+            flex-shrink: 0;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+        .chapter-item-fragment:hover .chapter-item-actions,
+        .chapter-item-fragment:focus-within .chapter-item-actions {
+            opacity: 1;
+        }
+        .chapter-action-btn {
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 0.75rem;
+            padding: 0.1rem 0.2rem;
+            opacity: 0.75;
+        }
+        .chapter-action-btn:hover { opacity: 1; }
+        .chapter-name-input {
+            flex: 1;
+            min-width: 0;
+            font-size: 0.78rem;
+            padding: 0.15rem 0.3rem;
+            border: 1px solid var(--accent);
+            border-radius: 0.25rem;
+            background: var(--bg-primary);
+            color: var(--text);
+        }
+        .chapter-item.dragging {
+            opacity: 0.45;
+        }
+        .chapter-item-fragment.chapter-item-drop-before {
+            border-top: 2px solid var(--accent);
+            margin-top: -0.1rem;
+        }
+        .chapter-item-locked {
+            cursor: default;
+        }
+        .app-toast {
+            position: fixed;
+            bottom: 1.25rem;
+            right: 1.25rem;
+            z-index: 1200;
+            max-width: min(360px, calc(100vw - 2rem));
+            padding: 0.65rem 0.85rem;
+            border-radius: 0.45rem;
+            font-size: 0.82rem;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            color: var(--text);
+            animation: toast-in 0.2s ease;
+        }
+        .app-toast.error {
+            border-color: rgba(220, 53, 69, 0.45);
+            background: rgba(220, 53, 69, 0.08);
+        }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateY(0.35rem); }
+            to { opacity: 1; transform: translateY(0); }
+        }
         .full-session-content {
             max-height: 520px;
         }
@@ -1427,6 +1501,8 @@
         let sessionsIndex = [];
         let activeChapterId = null;
         let analysisInFlight = false;
+        let chapterDragId = null;
+        let toastTimer = null;
         let suggestionDecisions = {};
         let pendingRewriteContext = null;
 
@@ -1836,6 +1912,25 @@
                 clearInterval(retryCountdownTimer);
                 retryCountdownTimer = null;
             }
+        }
+
+        function showToast(message, isError = false) {
+            if (toastTimer) {
+                clearTimeout(toastTimer);
+                toastTimer = null;
+            }
+            const existing = document.getElementById('app-toast');
+            if (existing) existing.remove();
+
+            const toast = document.createElement('div');
+            toast.id = 'app-toast';
+            toast.className = `app-toast${isError ? ' error' : ''}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            toastTimer = setTimeout(() => {
+                toast.remove();
+                toastTimer = null;
+            }, 4200);
         }
 
         function showError(message, options = {}) {
@@ -2478,26 +2573,132 @@
             });
         }
 
-        function renderChaptersList(chapters) {
-            if (!activeSessionId || !chapters.length) {
-                chaptersPanelEl.classList.add('hidden');
-                chaptersListEl.innerHTML = '';
+        function clearChapterDragState() {
+            chapterDragId = null;
+            chaptersListEl.querySelectorAll('.chapter-item-fragment').forEach((item) => {
+                item.classList.remove('dragging', 'chapter-item-drop-before');
+            });
+        }
+
+        function refreshChapterViewsAfterMutation() {
+            renderChaptersList(activeSessionData?.chapters || []);
+            if (!activeSessionData?.chapters?.length) {
+                learningPanel.innerHTML = `<p>Sesión <strong>${escapeHtml(activeSessionData?.name || '')}</strong> activa. Agregá un nuevo fragmento en el editor para el siguiente capítulo.</p>`;
+                activeChapterId = null;
+                return;
+            }
+            if (activeChapterId === FULL_SESSION_VIEW_ID) {
+                showFullSessionOptimized(activeSessionData.chapters);
+            } else if (activeChapterId) {
+                const chapter = activeSessionData.chapters.find((item) => item.id === activeChapterId);
+                if (chapter) {
+                    viewChapter(chapter.id);
+                } else {
+                    activeChapterId = FULL_SESSION_VIEW_ID;
+                    showFullSessionOptimized(activeSessionData.chapters);
+                }
+            }
+        }
+
+        async function deleteChapterById(chapterId) {
+            if (!activeSessionId) return;
+            if (!window.confirm('¿Eliminar este fragmento? El texto de la sesión se reensambla sin él.')) return;
+
+            const { response, data } = await apiJson(`/api/sessions/${activeSessionId}/chapters/${chapterId}`, {
+                method: 'DELETE',
+            });
+
+            if (!response.ok) {
+                showToast(data.error || 'No se pudo eliminar el fragmento.', true);
                 return;
             }
 
-            chaptersPanelEl.classList.remove('hidden');
-            chaptersListEl.innerHTML = `
-                <div class="chapter-item chapter-item-full ${activeChapterId === FULL_SESSION_VIEW_ID ? 'active' : ''}" data-chapter-id="${FULL_SESSION_VIEW_ID}">
-                    📄 Texto completo (${chapters.length})
-                </div>
-                ${chapters.map((chapter) => `
-                <div class="chapter-item ${chapter.id === activeChapterId ? 'active' : ''}" data-chapter-id="${escapeAttr(chapter.id)}">
-                    ${chapter.index}. ${escapeHtml(chapter.title)}
-                </div>`).join('')}
-            `;
+            activeSessionData = data.session;
+            if (activeChapterId === chapterId) {
+                activeChapterId = activeSessionData.chapters.length ? FULL_SESSION_VIEW_ID : null;
+            }
+            await refreshSessionsList(activeSessionId);
+            refreshChapterViewsAfterMutation();
+        }
 
+        async function reorderChaptersOnServer(orderedIds, previousChapters) {
+            if (!activeSessionId) return false;
+
+            const { response, data } = await apiJson(`/api/sessions/${activeSessionId}/chapters/order`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order: orderedIds }),
+            });
+
+            if (!response.ok) {
+                activeSessionData.chapters = previousChapters;
+                refreshChapterViewsAfterMutation();
+                showToast(data.error || data.details || 'No se pudo reordenar los fragmentos.', true);
+                return false;
+            }
+
+            activeSessionData = data.session;
+            refreshChapterViewsAfterMutation();
+            return true;
+        }
+
+        function startRenameChapter(chapterId) {
+            const chapter = activeSessionData?.chapters?.find((item) => item.id === chapterId);
+            const labelEl = chaptersListEl.querySelector(`.chapter-item-label[data-chapter-id="${chapterId}"]`);
+            if (!chapter || !labelEl) return;
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'chapter-name-input';
+            input.value = chapter.title;
+            input.maxLength = 120;
+
+            const finish = async (save) => {
+                const nextTitle = input.value.trim();
+                input.replaceWith(labelEl);
+                if (save && nextTitle && nextTitle !== chapter.title) {
+                    await renameChapterById(chapterId, nextTitle);
+                }
+            };
+
+            input.addEventListener('keydown', (event) => {
+                event.stopPropagation();
+                if (event.key === 'Enter') finish(true);
+                if (event.key === 'Escape') finish(false);
+            });
+            input.addEventListener('dblclick', (event) => event.stopPropagation());
+            input.addEventListener('click', (event) => event.stopPropagation());
+            input.addEventListener('blur', () => finish(true));
+
+            labelEl.replaceWith(input);
+            input.focus();
+            input.select();
+        }
+
+        async function renameChapterById(chapterId, title) {
+            if (!activeSessionId) return;
+
+            const { response, data } = await apiJson(`/api/sessions/${activeSessionId}/chapters/${chapterId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title }),
+            });
+
+            if (!response.ok) {
+                showToast(data.error || 'No se pudo renombrar el fragmento.', true);
+                return;
+            }
+
+            activeSessionData = data.session;
+            renderChaptersList(activeSessionData.chapters || []);
+        }
+
+        let chapterListDnDBound = false;
+
+        function bindChapterListInteractions() {
             chaptersListEl.querySelectorAll('.chapter-item').forEach((item) => {
-                item.addEventListener('click', () => {
+                item.addEventListener('click', (event) => {
+                    if (event.target.closest('.chapter-action-btn, .chapter-name-input')) return;
                     if (item.dataset.chapterId === FULL_SESSION_VIEW_ID) {
                         viewFullSessionText();
                     } else {
@@ -2505,6 +2706,108 @@
                     }
                 });
             });
+
+            chaptersListEl.querySelectorAll('.chapter-delete-btn').forEach((btn) => {
+                btn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    deleteChapterById(btn.dataset.chapterId);
+                });
+            });
+
+            chaptersListEl.querySelectorAll('.chapter-item-label').forEach((labelEl) => {
+                labelEl.addEventListener('dblclick', (event) => {
+                    event.stopPropagation();
+                    startRenameChapter(labelEl.dataset.chapterId);
+                });
+            });
+
+            if (chapterListDnDBound) return;
+            chapterListDnDBound = true;
+
+            chaptersListEl.addEventListener('dragstart', (event) => {
+                if (analysisInFlight) {
+                    event.preventDefault();
+                    return;
+                }
+                const item = event.target.closest('.chapter-item-fragment');
+                if (!item) return;
+                chapterDragId = item.dataset.chapterId;
+                item.classList.add('dragging');
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', chapterDragId);
+            });
+
+            chaptersListEl.addEventListener('dragover', (event) => {
+                if (!chapterDragId || analysisInFlight) return;
+                const item = event.target.closest('.chapter-item-fragment');
+                if (!item || item.dataset.chapterId === chapterDragId) return;
+                event.preventDefault();
+                chaptersListEl.querySelectorAll('.chapter-item-fragment').forEach((el) => {
+                    el.classList.remove('chapter-item-drop-before');
+                });
+                item.classList.add('chapter-item-drop-before');
+            });
+
+            chaptersListEl.addEventListener('dragleave', (event) => {
+                const item = event.target.closest('.chapter-item-fragment');
+                if (item) item.classList.remove('chapter-item-drop-before');
+            });
+
+            chaptersListEl.addEventListener('drop', async (event) => {
+                event.preventDefault();
+                const draggedId = chapterDragId;
+                clearChapterDragState();
+
+                if (!activeSessionData?.chapters?.length || !draggedId) return;
+                const target = event.target.closest('.chapter-item-fragment');
+                if (!target) return;
+
+                const sorted = getSortedChapters(activeSessionData.chapters);
+                const ids = sorted.map((ch) => ch.id);
+                const fromIdx = ids.indexOf(draggedId);
+                const toIdx = ids.indexOf(target.dataset.chapterId);
+                if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+
+                const newOrder = [...ids];
+                const [moved] = newOrder.splice(fromIdx, 1);
+                newOrder.splice(toIdx, 0, moved);
+
+                const previousChapters = activeSessionData.chapters.map((ch) => ({ ...ch }));
+                await reorderChaptersOnServer(newOrder, previousChapters);
+            });
+
+            chaptersListEl.addEventListener('dragend', () => {
+                clearChapterDragState();
+            });
+        }
+
+        function renderChaptersList(chapters) {
+            if (!activeSessionId || !chapters.length) {
+                chaptersPanelEl.classList.add('hidden');
+                chaptersListEl.innerHTML = '';
+                return;
+            }
+
+            const sorted = getSortedChapters(chapters);
+            const dragEnabled = !analysisInFlight;
+
+            chaptersPanelEl.classList.remove('hidden');
+            chaptersListEl.innerHTML = `
+                <div class="chapter-item chapter-item-full ${activeChapterId === FULL_SESSION_VIEW_ID ? 'active' : ''}" data-chapter-id="${FULL_SESSION_VIEW_ID}">
+                    📄 Texto completo (${sorted.length})
+                </div>
+                ${sorted.map((chapter) => `
+                <div class="chapter-item chapter-item-fragment ${chapter.id === activeChapterId ? 'active' : ''} ${dragEnabled ? '' : 'chapter-item-locked'}"
+                     data-chapter-id="${escapeAttr(chapter.id)}"
+                     ${dragEnabled ? 'draggable="true"' : ''}>
+                    <span class="chapter-item-label" data-chapter-id="${escapeAttr(chapter.id)}" title="Doble clic para renombrar">${chapter.index}. ${escapeHtml(chapter.title)}</span>
+                    <div class="chapter-item-actions">
+                        <button type="button" class="chapter-action-btn chapter-delete-btn" data-chapter-id="${escapeAttr(chapter.id)}" title="Eliminar fragmento">🗑️</button>
+                    </div>
+                </div>`).join('')}
+            `;
+
+            bindChapterListInteractions();
         }
 
         async function selectSession(sessionId) {

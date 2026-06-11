@@ -5,6 +5,9 @@ const {
   createSession,
   addChapter,
   deleteSession,
+  getSession,
+  renameChapter,
+  reorderChapters,
 } = require('./sessions_store');
 const {
   buildSessionExportText,
@@ -116,6 +119,74 @@ function runTests() {
   console.log('✓ Tests Composer v2 (A+C lógica) OK');
 }
 
+function runComposerV4FragmentTests() {
+  console.log('\n=== Composer v4 — fragmentos (reorder / rename) ===\n');
+
+  const session = createSession({ name: 'Reorden v4' });
+  addChapter(session.id, {
+    originalText: 'Texto del fragmento uno.',
+    audit: 'Auditoría 1',
+    optimizedText: 'Texto optimizado del fragmento uno.',
+  });
+  addChapter(session.id, {
+    originalText: 'Texto del fragmento dos.',
+    audit: 'Auditoría 2',
+    optimizedText: 'Texto optimizado del fragmento dos.',
+  });
+  addChapter(session.id, {
+    originalText: 'Texto del fragmento tres.',
+    audit: 'Auditoría 3',
+    optimizedText: 'Texto optimizado del fragmento tres.',
+  });
+
+  const loaded = getSession(session.id);
+  const [ch1, ch2, ch3] = [...loaded.chapters].sort((a, b) => a.index - b.index);
+  const exportBeforeReorder = buildSessionExportText(loaded);
+
+  const reordered = reorderChapters(session.id, [ch3.id, ch1.id, ch2.id]);
+  const exportAfterReorder = buildSessionExportText(reordered);
+  const idxOne = exportAfterReorder.indexOf('fragmento uno');
+  const idxTwo = exportAfterReorder.indexOf('fragmento dos');
+  const idxThree = exportAfterReorder.indexOf('fragmento tres');
+
+  assert.ok(idxThree < idxOne, 'fragmento 3 queda antes del 1');
+  assert.ok(idxOne < idxTwo, 'fragmento 1 queda antes del 2');
+  assert.notStrictEqual(exportAfterReorder, exportBeforeReorder, 'el export cambia tras reordenar');
+
+  const exportBeforeRename = buildSessionExportText(reordered);
+  const renamed = renameChapter(session.id, ch2.id, 'Borrador intro renombrado');
+  const renamedChapter = renamed.chapters.find((ch) => ch.id === ch2.id);
+  assert.strictEqual(renamedChapter.title, 'Borrador intro renombrado');
+  const exportAfterRename = buildSessionExportText(renamed);
+  assert.strictEqual(exportAfterRename, exportBeforeRename, 'rename no altera el texto exportado');
+
+  const snapshot = JSON.stringify(getSession(session.id).chapters.map((ch) => ({
+    id: ch.id,
+    index: ch.index,
+    title: ch.title,
+    optimizedText: ch.optimizedText,
+  })));
+
+  let rejected = false;
+  try {
+    reorderChapters(session.id, [ch1.id, ch2.id, 'id-inventado']);
+  } catch (err) {
+    rejected = true;
+  }
+  assert.strictEqual(rejected, true, 'reorder con ID inventado rechazado');
+
+  const unchanged = JSON.stringify(getSession(session.id).chapters.map((ch) => ({
+    id: ch.id,
+    index: ch.index,
+    title: ch.title,
+    optimizedText: ch.optimizedText,
+  })));
+  assert.strictEqual(unchanged, snapshot, 'reorder inválido no muta la sesión');
+
+  deleteSession(session.id);
+  console.log('✓ Tests Composer v4 (reorder/rename) OK');
+}
+
 async function runPdfSmoke() {
   const session = createSession({ name: 'PDF smoke' });
   addChapter(session.id, {
@@ -141,6 +212,7 @@ async function runPdfSmoke() {
 }
 
 runTests();
+runComposerV4FragmentTests();
 runPdfSmoke().catch((err) => {
   console.error('✗', err);
   process.exit(1);

@@ -11,6 +11,8 @@ const {
   deleteSession,
   addChapter,
   deleteChapter,
+  renameChapter,
+  reorderChapters,
   recordSessionUsage,
   buildSessionContextForLlm,
 } = require('./sessions_store');
@@ -1226,6 +1228,14 @@ const chapterCreateSchema = Joi.object({
   nivel: Joi.string().valid(...NIVEL_OPTIONS).optional(),
 }).options({ stripUnknown: true });
 
+const chapterRenameSchema = Joi.object({
+  title: Joi.string().trim().min(1).max(120).required(),
+}).options({ stripUnknown: true });
+
+const chapterOrderSchema = Joi.object({
+  order: Joi.array().items(Joi.string().trim().min(1)).min(1).required(),
+}).options({ stripUnknown: true });
+
 app.get('/api/config', (req, res) => {
   const providerId = getLlmProviderId();
   const provider = getLlmProvider(providerId);
@@ -1630,6 +1640,45 @@ app.delete('/api/sessions/:id/chapters/:chapterId', asyncHandler(async (req, res
     return res.status(404).json({ error: 'Sesión o capítulo no encontrado' });
   }
   return res.json({ session });
+}));
+
+app.patch('/api/sessions/:id/chapters/:chapterId', asyncHandler(async (req, res) => {
+  const { error, value } = chapterRenameSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  const session = renameChapter(req.params.id, req.params.chapterId, value.title);
+  if (!session) {
+    return res.status(404).json({ error: 'Sesión o fragmento no encontrado' });
+  }
+  return res.json({ session });
+}));
+
+app.put('/api/sessions/:id/chapters/order', asyncHandler(async (req, res) => {
+  const { error, value } = chapterOrderSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  try {
+    const session = reorderChapters(req.params.id, value.order);
+    if (!session) {
+      return res.status(404).json({ error: 'Sesión no encontrada' });
+    }
+    return res.json({ session });
+  } catch (orderErr) {
+    return res.status(400).json({
+      error: 'Orden de fragmentos inválido',
+      details: orderErr.message,
+    });
+  }
 }));
 
 app.post('/api/suggest', asyncHandler(async (req, res) => {

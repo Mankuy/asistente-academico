@@ -224,6 +224,65 @@ function deleteChapter(sessionId, chapterId) {
   return session;
 }
 
+/**
+ * Renombra el fragmento (solo `title`).
+ * CONTRATO: no modificar originalText, optimizedText, audit, chapterTitle ni index.
+ */
+function renameChapter(sessionId, chapterId, title) {
+  const session = getSession(sessionId);
+  if (!session) return null;
+
+  const chapter = session.chapters.find((ch) => ch.id === chapterId);
+  if (!chapter) return null;
+
+  chapter.title = sanitizeLine(title);
+  writeSessionFile(session);
+  return session;
+}
+
+function validateChapterOrderIds(chapters, orderedIds) {
+  const ids = Array.isArray(orderedIds) ? orderedIds.map(String) : [];
+  if (!ids.length && chapters.length) {
+    throw new Error('El orden de fragmentos no puede estar vacío.');
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('El orden de fragmentos contiene IDs duplicados.');
+  }
+
+  const expected = new Set(chapters.map((ch) => ch.id));
+  const received = new Set(ids);
+  if (expected.size !== received.size) {
+    throw new Error('El orden debe incluir exactamente todos los fragmentos de la sesión.');
+  }
+  for (const id of expected) {
+    if (!received.has(id)) {
+      throw new Error('El orden debe incluir exactamente todos los fragmentos de la sesión.');
+    }
+  }
+}
+
+/**
+ * Reordena fragmentos según orderedIds y reasigna index secuencial (1, 2, 3…).
+ * Afecta el texto ensamblado, el export y el contexto de coherencia de estilo del LLM.
+ * No renombra chapterTitle ni renumera encabezados "Capítulo X" automáticamente.
+ */
+function reorderChapters(sessionId, orderedIds) {
+  const session = getSession(sessionId);
+  if (!session) return null;
+
+  validateChapterOrderIds(session.chapters, orderedIds);
+
+  const byId = new Map(session.chapters.map((ch) => [ch.id, ch]));
+  session.chapters = orderedIds.map((id, idx) => {
+    const chapter = byId.get(id);
+    chapter.index = idx + 1;
+    return chapter;
+  });
+
+  writeSessionFile(session);
+  return session;
+}
+
 function truncateExcerpt(text, maxLen) {
   const clean = String(text || '').trim();
   if (clean.length <= maxLen) return clean;
@@ -235,7 +294,8 @@ function buildSessionContextForLlm(session) {
     return null;
   }
 
-  const previousChapters = session.chapters
+  const sortedChapters = [...session.chapters].sort((a, b) => (a.index || 0) - (b.index || 0));
+  const previousChapters = sortedChapters
     .slice(-MAX_CONTEXT_CHAPTERS)
     .map((ch) => ({
       title: ch.title,
@@ -264,6 +324,9 @@ module.exports = {
   deleteSession,
   addChapter,
   deleteChapter,
+  renameChapter,
+  reorderChapters,
+  validateChapterOrderIds,
   recordSessionUsage,
   buildSessionContextForLlm,
   deriveTitleFromText,
