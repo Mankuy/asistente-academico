@@ -888,6 +888,31 @@
             margin-top: 0.6rem;
             flex-wrap: wrap;
         }
+        .usage-meter {
+            background: var(--badge-bg);
+            border: 1px solid var(--border);
+            border-radius: 0.45rem;
+            padding: 0.55rem 0.7rem;
+            margin-bottom: 0.65rem;
+            font-size: 0.8rem;
+            line-height: 1.4;
+        }
+        .usage-meter.hidden { display: none; }
+        .usage-meter strong { display: block; margin-bottom: 0.15rem; }
+        .badge.bunker-on {
+            background: rgba(25, 135, 84, 0.18);
+            border: 1px solid rgba(25, 135, 84, 0.35);
+        }
+        .badge.hidden { display: none; }
+        .bunker-toggle {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            margin: 0.75rem 0;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        .bunker-toggle input { margin-top: 0.2rem; }
         .chapter-saved-banner {
             background: rgba(25, 135, 84, 0.12);
             color: var(--status-ok);
@@ -1037,7 +1062,14 @@
             <span class="badge-icon">🔒</span> Fuente de datos
             <span class="badge-tooltip" id="tip-fuente" role="tooltip">
                 <strong>Fuente de datos</strong>
-                Tu texto no se usa para entrenar modelos. Las correcciones se procesan al momento y tu contenido queda en tu sesión local, sin compartirse como material de entrenamiento.
+                Tu texto se envía solo al proveedor LLM que VOS elegiste; nunca a nuestros servidores. No se usa para entrenar modelos y queda guardado en tu sesión local.
+            </span>
+        </span>
+        <span class="badge bunker-badge hidden" id="bunker-badge" tabindex="0" aria-describedby="tip-bunker">
+            <span class="badge-icon">🛡️</span> Modo Búnker
+            <span class="badge-tooltip" id="tip-bunker" role="tooltip">
+                <strong>Modo Búnker</strong>
+                0 bytes salen de esta máquina: sin Crossref ni APIs remotas. Solo modelos locales en localhost (Ollama / LM Studio).
             </span>
         </span>
         <span class="badge" tabindex="0" aria-describedby="tip-norma">
@@ -1109,6 +1141,10 @@
         <label for="cost-threshold">Umbral de confirmación de costo (USD)</label>
         <input id="cost-threshold" type="number" min="0" max="100" step="0.01" placeholder="0.10">
         <p class="settings-help">Si el análisis estimado supera este monto, el frontend pedirá confirmación.</p>
+        <label class="bunker-toggle" for="bunker-mode">
+            <input id="bunker-mode" type="checkbox">
+            <span><strong>Modo Búnker</strong> — bloquea Crossref y endpoints remotos. Solo localhost (Ollama/LM Studio). Badge: «0 bytes salen de esta máquina».</span>
+        </label>
         <label for="llm-key-active" id="llm-key-active-label">API Key del proveedor activo</label>
         <input id="llm-key-active" type="password" placeholder="Pegá la API Key (vacío = mantener la guardada)" autocomplete="off">
         <details class="keys-vault" id="keys-vault" open>
@@ -1183,6 +1219,7 @@
     <div id="resizer-editor" class="resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar editor y panel de aprendizaje"></div>
     <aside id="learning-aside">
         <h2 style="margin-bottom:0.5rem; font-size:1.1rem;">Panel de aprendizaje</h2>
+        <div id="usage-meter" class="usage-meter hidden" aria-live="polite"></div>
         <div id="learning-panel">
             <p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>
         </div>
@@ -1208,6 +1245,9 @@
         const llmFastModelInput = document.getElementById('llm-fast-model');
         const fastModelSuggestions = document.getElementById('fast-model-suggestions');
         const costThresholdInput = document.getElementById('cost-threshold');
+        const bunkerModeInput = document.getElementById('bunker-mode');
+        const bunkerBadge = document.getElementById('bunker-badge');
+        const usageMeterEl = document.getElementById('usage-meter');
         const llmBaseUrlInput = document.getElementById('llm-base-url');
         const llmBaseUrlLabel = document.getElementById('llm-base-url-label');
         const providerDocsLink = document.getElementById('provider-docs-link');
@@ -1309,7 +1349,7 @@
         const MIN_SESSIONS_WIDTH = 180;
         const MIN_SECTION_WIDTH = 280;
         const MIN_ASIDE_WIDTH = 260;
-        let currentConfig = { configured: false, maskedKey: null, model: 'openrouter/owl-alpha', provider: 'openrouter', providerLabel: 'OpenRouter', baseUrl: '', keyOptional: false, maskedKeys: {}, savedModels: {}, savedBaseUrls: {}, legacyApi: false };
+        let currentConfig = { configured: false, maskedKey: null, model: 'openrouter/owl-alpha', provider: 'openrouter', providerLabel: 'OpenRouter', baseUrl: '', keyOptional: false, maskedKeys: {}, savedModels: {}, savedBaseUrls: {}, legacyApi: false, bunkerMode: false };
         const DEBOUNCE_MS = 500;
         const CLIENT_RETRY_MAX = 4;
         const ACTIVE_SESSION_KEY = 'academic-active-session';
@@ -1460,6 +1500,37 @@
             }
         }
 
+        function formatUsageUsd(value) {
+            return Number(value || 0).toFixed(4);
+        }
+
+        function renderUsageMeter(usage) {
+            if (!usageMeterEl) return;
+            if (!usage || !activeSessionId) {
+                usageMeterEl.classList.add('hidden');
+                usageMeterEl.innerHTML = '';
+                return;
+            }
+            usageMeterEl.classList.remove('hidden');
+            usageMeterEl.innerHTML = `
+                <strong>💰 Gasto de sesión (estimado)</strong>
+                <span>USD ${formatUsageUsd(usage.totalCostUsd)} · ${usage.totalRequests || 0} análisis · ${(usage.totalChars || 0).toLocaleString()} caracteres procesados</span>`;
+        }
+
+        function syncSessionUsage(usage) {
+            if (!usage) return;
+            if (activeSessionData) activeSessionData.usage = usage;
+            const idx = sessionsIndex.findIndex((item) => item.id === activeSessionId);
+            if (idx !== -1) sessionsIndex[idx].usage = usage;
+            renderUsageMeter(usage);
+        }
+
+        function updateBunkerBadge(bunkerMode) {
+            if (!bunkerBadge) return;
+            bunkerBadge.classList.toggle('bunker-on', Boolean(bunkerMode));
+            bunkerBadge.classList.toggle('hidden', !bunkerMode);
+        }
+
         function setSettingsStatus(configured, maskedKey, model, providerLabel) {
             const providerPart = providerLabel ? `${providerLabel}` : 'IA';
             const modelLabel = model ? ` · ${model}` : '';
@@ -1486,6 +1557,9 @@
             }
             if (costThresholdInput) {
                 costThresholdInput.value = currentConfig.costConfirmThresholdUsd ?? 0.1;
+            }
+            if (bunkerModeInput) {
+                bunkerModeInput.checked = Boolean(currentConfig.bunkerMode);
             }
             llmBaseUrlInput.value = currentConfig.baseUrl || getSavedBaseUrlForProvider(providerId);
             buildKeysVault(getVaultProviders());
@@ -1537,7 +1611,9 @@
                         providerLabel: data.providerLabel || 'OpenRouter',
                         baseUrl: data.baseUrl || '',
                         keyOptional: data.keyOptional || false,
+                        bunkerMode: Boolean(data.bunkerMode),
                     };
+                    updateBunkerBadge(currentConfig.bunkerMode);
                     buildKeysVault(getVaultProviders());
                     llmProviderSelect.value = currentConfig.provider;
                     updateActiveKeyField(currentConfig.provider);
@@ -1554,7 +1630,7 @@
             }
         }
 
-        function buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey, fastModel, costThreshold) {
+        function buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey, fastModel, costThreshold, bunkerMode) {
             const keyForProvider = apiKeys[provider] || activeKey || '';
             const fastModels = { ...(currentConfig.savedFastModels || {}) };
             if (fastModel) fastModels[provider] = fastModel;
@@ -1571,6 +1647,7 @@
                 fastModel,
                 fastModels,
                 costConfirmThresholdUsd: costThreshold,
+                bunkerMode: Boolean(bunkerMode),
                 openRouterModel: model,
                 baseUrl,
                 apiKeys,
@@ -1583,6 +1660,7 @@
             const model = llmModelInput.value.trim();
             const fastModel = llmFastModelInput ? llmFastModelInput.value.trim() : '';
             const costThreshold = costThresholdInput ? Number(costThresholdInput.value) : 0.1;
+            const bunkerMode = bunkerModeInput ? bunkerModeInput.checked : false;
             const baseUrl = llmBaseUrlInput.value.trim();
             const meta = PROVIDER_DEFAULTS[provider] || PROVIDER_DEFAULTS.openrouter;
 
@@ -1623,7 +1701,7 @@
                 const response = await fetch('/api/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey, fastModel, costThreshold))
+                    body: JSON.stringify(buildConfigPayload(provider, model, baseUrl, apiKeys, activeKey, fastModel, costThreshold, bunkerMode))
                 });
                 const data = await response.json().catch(() => ({}));
 
@@ -1655,7 +1733,9 @@
                     providerLabel: data.providerLabel || llmProviderSelect.selectedOptions[0]?.textContent || provider,
                     baseUrl: data.baseUrl || baseUrl,
                     keyOptional: meta.keyOptional,
+                    bunkerMode: Boolean(data.bunkerMode ?? bunkerMode),
                 };
+                updateBunkerBadge(currentConfig.bunkerMode);
                 if (data.savedModels) {
                     Object.assign(PROVIDER_DEFAULTS[provider] || {}, { model: data.model });
                 }
@@ -2001,6 +2081,7 @@
                     return;
                 }
 
+                syncSessionUsage(rewriteResult.data.usage);
                 await finalizeAnalysis(ctx.text, ctx.audit, ctx.auditJson, ctx.auditMode, optimizedText);
             } catch (error) {
                 showError(error.message || 'No se pudo completar la optimización.', { retryable: true });
@@ -2186,6 +2267,7 @@
             if (activeSessionData.norma) normaSelect.value = activeSessionData.norma;
             if (activeSessionData.nivel) nivelSelect.value = activeSessionData.nivel;
             renderChaptersList(activeSessionData.chapters || []);
+            renderUsageMeter(activeSessionData.usage);
             return activeSessionData;
         }
 
@@ -2214,7 +2296,7 @@
                                 <button type="button" class="session-action-btn session-delete-btn" data-session-id="${escapeAttr(session.id)}" title="Eliminar sesión">🗑️</button>
                             </div>
                         </div>
-                        <div class="session-meta">${session.chapterCount} capítulo(s)</div>
+                        <div class="session-meta">${session.chapterCount} capítulo(s)${session.usage?.totalCostUsd ? ` · USD ${formatUsageUsd(session.usage.totalCostUsd)}` : ''}</div>
                     </div>`;
             }).join('');
 
@@ -2500,6 +2582,8 @@
                     showSuggestion(auditData.message);
                     return;
                 }
+
+                syncSessionUsage(auditData.usage);
 
                 const audit = auditData.audit;
                 const auditJson = auditData.auditJson || null;

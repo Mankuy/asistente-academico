@@ -11,6 +11,7 @@ const {
   deleteSession,
   addChapter,
   deleteChapter,
+  recordSessionUsage,
   buildSessionContextForLlm,
 } = require('./sessions_store');
 const {
@@ -18,7 +19,13 @@ const {
   classifyIntentRegex,
   parseGuardianJson,
   estimateCostUsd,
+  estimateStageCostUsd,
 } = require('./guardian');
+const {
+  isBunkerMode,
+  isLocalhostEndpoint,
+  assertBunkerAllowsEndpoint,
+} = require('./bunker');
 const {
   AUDIT_JSON_SCHEMA_HINT,
   sanitizeZeroWidth,
@@ -301,6 +308,8 @@ const CONFIG = {
   LLM_FAST_MODELS_JSON: '{}',
   LLM_BASE_URLS_JSON: '{}',
   COST_CONFIRM_THRESHOLD_USD: '0.10',
+  BUNKER_MODE: 'false',
+  BIND_HOST: '127.0.0.1',
 };
 
 function getLlmProvider(providerId) {
@@ -377,6 +386,10 @@ function getCostConfirmThreshold() {
   const value = Number(raw);
   if (Number.isNaN(value) || value < 0) return 0.1;
   return value;
+}
+
+function getBindHost() {
+  return (process.env.BIND_HOST || CONFIG.BIND_HOST || '127.0.0.1').trim() || '127.0.0.1';
 }
 
 function loadLlmBaseUrlsStore() {
@@ -631,6 +644,19 @@ async function callLlmOnce(systemPrompt, userText, opts = {}) {
     throw new ApiError('URL del proveedor no configurada', 503, 'Ingresá la URL base para el proveedor seleccionado.', { retryable: false });
   }
 
+  if (isBunkerMode()) {
+    try {
+      assertBunkerAllowsEndpoint(endpoint);
+    } catch (bunkerErr) {
+      throw new ApiError(
+        'Modo Búnker activo',
+        403,
+        'Solo se permiten modelos locales (localhost). Desactivá Modo Búnker en ⚙️ o configurá Ollama/LM Studio.',
+        { retryable: false }
+      );
+    }
+  }
+
   let response;
   try {
     response = await fetch(endpoint, {
@@ -823,6 +849,13 @@ async function classifyIntentLLM(text) {
   const snippet = String(text || '').trim().slice(0, 600);
   if (!snippet) return 'unknown';
 
+  if (isBunkerMode()) {
+    const endpoint = getLlmBaseUrl();
+    if (!isLocalhostEndpoint(endpoint)) {
+      return 'unknown';
+    }
+  }
+
   try {
     const raw = await callLlmOnce(GUARDIAN_SYSTEM_PROMPT, snippet, {
       model: getLlmFastModel(),
@@ -888,6 +921,10 @@ function formatCrossrefWork(item) {
 }
 
 async function searchAcademicData(query) {
+  if (isBunkerMode()) {
+    return '';
+  }
+
   try {
     const url = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&select=title,author,issued,DOI,publisher,page&rows=3`;
     const response = await fetch(url, {
@@ -1005,6 +1042,18 @@ function buildAuditApiPayload(auditResult) {
   };
 }
 
+function recordSuggestUsage(sessionId, stage, charCount, model, sessionChapterCount = 0) {
+  if (!sessionId) return null;
+
+  const costUsd = estimateStageCostUsd(charCount, model, stage, { sessionChapters: sessionChapterCount });
+  return recordSessionUsage(sessionId, {
+    stage,
+    costUsd,
+    charCount,
+    model,
+  });
+}
+
 const configSaveSchema = Joi.object({
   provider: Joi.string()
     .trim()
@@ -1036,6 +1085,7 @@ const configSaveSchema = Joi.object({
     .pattern(Joi.string().valid(...LLM_PROVIDER_IDS), Joi.string().trim().allow('').max(300))
     .optional(),
   costConfirmThresholdUsd: Joi.number().min(0).max(100).optional(),
+  bunkerMode: Joi.boolean().optional(),
 }).options({ stripUnknown: true });
 
 const estimateSchema = Joi.object({
@@ -1129,6 +1179,8 @@ app.get('/api/config', (req, res) => {
     model,
     fastModel,
     costConfirmThresholdUsd: getCostConfirmThreshold(),
+    bunkerMode: isBunkerMode(),
+    bindHost: getBindHost(),
     baseUrl,
     defaultModel: provider.defaultModel,
     keyOptional: provider.keyOptional,
@@ -1270,6 +1322,11 @@ app.post('/api/config', asyncHandler(async (req, res) => {
       CONFIG.COST_CONFIRM_THRESHOLD_USD = String(value.costConfirmThresholdUsd);
     }
 
+    if (typeof value.bunkerMode === 'boolean') {
+      saveEnvVariable('BUNKER_MODE', value.bunkerMode ? 'true' : 'false');
+      CONFIG.BUNKER_MODE = value.bunkerMode ? 'true' : 'false';
+    }
+
     const maskedKeys = getMaskedKeysForAllProviders();
 
     return res.json({
@@ -1286,6 +1343,7 @@ app.post('/api/config', asyncHandler(async (req, res) => {
       model: value.model,
       fastModel: getLlmFastModel(value.provider),
       costConfirmThresholdUsd: getCostConfirmThreshold(),
+      bunkerMode: isBunkerMode(),
       baseUrl: nextBaseUrl,
     });
   } catch (writeErr) {
@@ -1534,6 +1592,13 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     if (stage === 'audit') {
       console.log(`[api/suggest] Fase 1 (Auditoría JSON) · ${provider.label} · ${getLlmModel()}`);
       const auditResult = await runAuditStage(inputText, norma, nivel, sessionContext);
+      const usage = recordSuggestUsage(
+        value.sessionId,
+        'audit',
+        inputText.length,
+        getLlmModel(),
+        sessionChapterCount
+      );
       return res.json({
         redirect: false,
         stage: 'audit',
@@ -1543,6 +1608,8 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         sessionId: value.sessionId || null,
         provider: getLlmProviderId(),
         providerLabel: provider.label,
+        usage,
+        bunkerMode: isBunkerMode(),
       });
     }
 
@@ -1568,6 +1635,13 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       }
 
       const optimizedText = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
+      const usage = recordSuggestUsage(
+        value.sessionId,
+        'rewrite',
+        inputText.length,
+        getLlmModel(),
+        sessionChapterCount
+      );
       return res.json({
         redirect: false,
         stage: 'rewrite',
@@ -1577,12 +1651,21 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         sessionId: value.sessionId || null,
         provider: getLlmProviderId(),
         providerLabel: provider.label,
+        usage,
+        bunkerMode: isBunkerMode(),
       });
     }
 
     console.log(`[api/suggest] Análisis completo (2 etapas) · ${provider.label} · ${getLlmModel()}`);
     const auditResult = await runAuditStage(inputText, norma, nivel, sessionContext);
     const optimizedText = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
+    const usage = recordSuggestUsage(
+      value.sessionId,
+      'full',
+      inputText.length,
+      getLlmModel(),
+      sessionChapterCount
+    );
 
     return res.json({
       redirect: false,
@@ -1597,6 +1680,8 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       sessionId: value.sessionId || null,
       provider: getLlmProviderId(),
       providerLabel: provider.label,
+      usage,
+      bunkerMode: isBunkerMode(),
       explanation: 'Análisis en dos etapas (Auditoría JSON + Reescritura) con System Prompt v3.0.',
     });
   } catch (err) {
@@ -1645,12 +1730,16 @@ app.use((err, req, res, next) => {
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
+  const bindHost = getBindHost();
+  app.listen(PORT, bindHost, () => {
     const provider = getLlmProvider(getLlmProviderId());
     const configured = isLlmConfigured();
-    console.log(`Servidor escuchando en http://localhost:${PORT}`);
+    console.log(`Servidor escuchando en http://${bindHost}:${PORT}`);
     console.log(`Proveedor LLM: ${provider.label} · Modelo: ${getLlmModel() || '(sin configurar)'}`);
     console.log(`Guardián (modelo económico): ${getLlmFastModel() || '(fallback al principal)'}`);
+    if (isBunkerMode()) {
+      console.log('Modo Búnker: ACTIVO — sin Crossref ni endpoints remotos');
+    }
     if (!configured) {
       console.warn('ADVERTENCIA: Proveedor LLM no configurado. Configuralo desde ⚙️ en el frontend.');
     }
@@ -1670,6 +1759,11 @@ module.exports = {
   classifyIntentLLM,
   containsEvasionIntent,
   estimateCostUsd,
+  estimateStageCostUsd,
   getLlmFastModel,
+  getBindHost,
+  isBunkerMode,
+  isLocalhostEndpoint,
+  recordSuggestUsage,
   callLlmOnce,
 };

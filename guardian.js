@@ -143,6 +143,29 @@ function resolveModelPrice(model) {
   return MODEL_PRICE_PER_1M.default;
 }
 
+function estimateStageCostUsd(chars, model, stage = 'full', options = {}) {
+  const charCount = Math.max(0, Number(chars) || 0);
+  const prices = resolveModelPrice(model);
+  const inputTokens = Math.ceil(charCount / 4);
+  const sessionExtra = options.sessionChapters ? Math.min(options.sessionChapters * 400, 3000) : 0;
+
+  if (stage === 'audit') {
+    const auditInput = inputTokens + 1200 + sessionExtra;
+    const auditOutput = 1800;
+    const cost = ((auditInput * prices.input) + (auditOutput * prices.output)) / 1_000_000;
+    return Math.round(cost * 10000) / 10000;
+  }
+
+  if (stage === 'rewrite') {
+    const rewriteInput = inputTokens + 2500 + sessionExtra;
+    const rewriteOutput = Math.min(Math.ceil(inputTokens * 1.15), 10000);
+    const cost = ((rewriteInput * prices.input) + (rewriteOutput * prices.output)) / 1_000_000;
+    return Math.round(cost * 10000) / 10000;
+  }
+
+  return estimateCostUsd(chars, model, options);
+}
+
 function estimateCostUsd(chars, model, options = {}) {
   const charCount = Math.max(0, Number(chars) || 0);
   const prices = resolveModelPrice(model);
@@ -166,5 +189,6 @@ module.exports = {
   classifyIntentRegex,
   parseGuardianJson,
   estimateCostUsd,
+  estimateStageCostUsd,
   resolveModelPrice,
 };

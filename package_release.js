@@ -13,8 +13,11 @@ const FILES_TO_COPY = [
   'audit_json.js',
   'biblioteca_store.js',
   'docx_export.js',
+  'bunker.js',
   'package.json',
   'iniciar_asistente.bat',
+  'Dockerfile',
+  'docker-compose.yml',
 ];
 
 const ENV_EXAMPLE = [
@@ -29,6 +32,8 @@ const ENV_EXAMPLE = [
   'LLM_FAST_MODELS_JSON={}',
   'LLM_BASE_URLS_JSON={}',
   'COST_CONFIRM_THRESHOLD_USD=0.10',
+  'BUNKER_MODE=false',
+  'BIND_HOST=127.0.0.1',
   '',
   '# Legacy (opcional):',
   '# LLM_API_KEY=',

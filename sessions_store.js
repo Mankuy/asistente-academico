@@ -9,6 +9,16 @@ const EXCERPT_ORIGINAL_MAX = 400;
 const EXCERPT_OPTIMIZED_MAX = 2200;
 const EXCERPT_AUDIT_MAX = 1200;
 const MAX_CONTEXT_CHAPTERS = 4;
+const MAX_USAGE_ENTRIES = 80;
+
+function emptyUsage() {
+  return {
+    totalCostUsd: 0,
+    totalRequests: 0,
+    totalChars: 0,
+    entries: [],
+  };
+}
 
 function ensureSessionsDir() {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -60,6 +70,7 @@ function listSessions() {
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         chapterCount: Array.isArray(session.chapters) ? session.chapters.length : 0,
+        usage: session.usage || emptyUsage(),
       };
     } catch {
       return null;
@@ -88,9 +99,43 @@ function createSession({ name, norma, nivel, seedText }) {
     createdAt: now,
     updatedAt: now,
     chapters: [],
+    usage: emptyUsage(),
   };
   writeSessionFile(session);
   return session;
+}
+
+function recordSessionUsage(sessionId, entry = {}) {
+  const session = getSession(sessionId);
+  if (!session) return null;
+
+  const usage = session.usage && typeof session.usage === 'object'
+    ? session.usage
+    : emptyUsage();
+
+  const costUsd = Math.max(0, Number(entry.costUsd) || 0);
+  const charCount = Math.max(0, Number(entry.charCount) || 0);
+  const stage = String(entry.stage || 'full');
+  const model = String(entry.model || '').trim();
+
+  usage.totalCostUsd = Math.round((usage.totalCostUsd + costUsd) * 10000) / 10000;
+  usage.totalRequests += 1;
+  usage.totalChars += charCount;
+  usage.entries.push({
+    stage,
+    costUsd,
+    charCount,
+    model,
+    at: new Date().toISOString(),
+  });
+
+  if (usage.entries.length > MAX_USAGE_ENTRIES) {
+    usage.entries = usage.entries.slice(-MAX_USAGE_ENTRIES);
+  }
+
+  session.usage = usage;
+  writeSessionFile(session);
+  return usage;
 }
 
 function updateSession(id, updates = {}) {
@@ -206,6 +251,7 @@ function buildSessionContextForLlm(session) {
 
 module.exports = {
   SESSIONS_DIR,
+  emptyUsage,
   listSessions,
   getSession,
   createSession,
@@ -213,6 +259,7 @@ module.exports = {
   deleteSession,
   addChapter,
   deleteChapter,
+  recordSessionUsage,
   buildSessionContextForLlm,
   deriveTitleFromText,
 };

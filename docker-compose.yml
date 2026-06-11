@@ -1,0 +1,19 @@
+# Asistente Académico — solo accesible desde esta máquina (127.0.0.1).
+# Dentro del contenedor Express escucha en 0.0.0.0:4000; el mapeo de puertos
+# limita el acceso externo a localhost del host.
+services:
+  asistente:
+    build: .
+    container_name: asistente-academico
+    ports:
+      - "127.0.0.1:4000:4000"
+    environment:
+      - PORT=4000
+      - BIND_HOST=0.0.0.0
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./entregables:/app/entregables
+      - ./biblioteca:/app/biblioteca
+    restart: unless-stopped
