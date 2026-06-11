@@ -157,6 +157,14 @@
             align-items: center;
             gap: 1rem;
             flex-wrap: wrap;
+            position: relative;
+            z-index: 20;
+            overflow: visible;
+        }
+        .badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
         }
         .header-actions {
             margin-left: auto;
@@ -461,12 +469,56 @@
             display: inline-flex;
             align-items: center;
             gap: 0.25rem;
-            cursor: default;
+            cursor: help;
             user-select: none;
+            position: relative;
             transition: background-color 0.2s ease;
         }
-        .badge:hover { background: var(--badge-hover); }
+        .badge:hover,
+        .badge:focus-visible {
+            background: var(--badge-hover);
+            outline: none;
+        }
         .badge-icon { font-size: 1rem; }
+        .badge-tooltip {
+            position: absolute;
+            top: calc(100% + 0.45rem);
+            left: 50%;
+            transform: translateX(-50%) translateY(4px);
+            width: max-content;
+            max-width: min(300px, 88vw);
+            padding: 0.55rem 0.7rem;
+            border-radius: 0.5rem;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            box-shadow: 0 8px 24px var(--shadow-modal);
+            font-size: 0.78rem;
+            line-height: 1.45;
+            color: var(--text-primary);
+            text-align: left;
+            white-space: normal;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            z-index: 200;
+            transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s ease;
+        }
+        .badge-tooltip strong {
+            display: block;
+            font-size: 0.8rem;
+            margin-bottom: 0.25rem;
+        }
+        .badge:hover .badge-tooltip,
+        .badge:focus-visible .badge-tooltip,
+        .badge:focus-within .badge-tooltip {
+            opacity: 1;
+            visibility: visible;
+            transform: translateX(-50%) translateY(0);
+        }
+        .dark-theme .badge-tooltip {
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.12);
+        }
         main {
             flex: 1;
             display: flex;
@@ -855,10 +907,34 @@
 <header>
     <h1 style="font-size:1.25rem; margin:0;">Asistente de Escritura Académica</h1>
     <div class="badges">
-        <span class="badge" title="Fuente de datos"><span class="badge-icon">🔒</span> Fuente de datos</span>
-        <span class="badge" title="Base normativa"><span class="badge-icon">📚</span> Base normativa</span>
-        <span class="badge" title="Evaluación de intención"><span class="badge-icon">⚖️</span> Evaluación de intención</span>
-        <span class="badge" title="Sugerencia ética"><span class="badge-icon">💡</span> Sugerencia ética</span>
+        <span class="badge" tabindex="0" aria-describedby="tip-fuente">
+            <span class="badge-icon">🔒</span> Fuente de datos
+            <span class="badge-tooltip" id="tip-fuente" role="tooltip">
+                <strong>Fuente de datos</strong>
+                Tu texto no se usa para entrenar modelos. Las correcciones se procesan al momento y tu contenido queda en tu sesión local, sin compartirse como material de entrenamiento.
+            </span>
+        </span>
+        <span class="badge" tabindex="0" aria-describedby="tip-norma">
+            <span class="badge-icon">📚</span> Base normativa
+            <span class="badge-tooltip" id="tip-norma" role="tooltip">
+                <strong>Base normativa</strong>
+                <span id="badge-norma-detail">Indica qué manual de citas usa el análisis. Podés cambiarlo en el selector del editor.</span>
+            </span>
+        </span>
+        <span class="badge" tabindex="0" aria-describedby="tip-intencion">
+            <span class="badge-icon">⚖️</span> Evaluación de intención
+            <span class="badge-tooltip" id="tip-intencion" role="tooltip">
+                <strong>Evaluación de intención</strong>
+                Antes de corregir, detecta si buscás mejorar la escritura académica o evadir detectores de plagio/IA. Si detecta evasión, bloquea la petición y ofrece ayuda legítima.
+            </span>
+        </span>
+        <span class="badge" tabindex="0" aria-describedby="tip-etica">
+            <span class="badge-icon">💡</span> Sugerencia ética
+            <span class="badge-tooltip" id="tip-etica" role="tooltip">
+                <strong>Sugerencia ética</strong>
+                Las correcciones apuntan a claridad, rigor y citas correctas. Nunca ayudan a pasar controles de plagio ni a disfrazar texto para evitar detección.
+            </span>
+        </span>
     </div>
     <div class="header-actions">
         <span id="settings-status" class="settings-status warn">API Key: sin configurar</span>
@@ -2189,6 +2265,12 @@
             }
         }
 
+        function updateNormaBadgeTooltip() {
+            const detail = document.getElementById('badge-norma-detail');
+            if (!detail) return;
+            detail.textContent = `Normativa activa: ${normaSelect.value}. El auditor adapta citas, referencias y formato según este manual.`;
+        }
+
         function isDarkTheme() {
             return document.documentElement.classList.contains('dark-theme');
         }
@@ -2379,6 +2461,7 @@
         }
 
         applyTheme(localStorage.getItem(THEME_KEY) === 'dark');
+        updateNormaBadgeTooltip();
         initPanelLayout();
 
         themeBtn.addEventListener('click', toggleTheme);
@@ -2425,7 +2508,10 @@
         });
 
         editor.addEventListener('input', analyzeEditorContent);
-        normaSelect.addEventListener('change', analyzeEditorContent);
+        normaSelect.addEventListener('change', () => {
+            updateNormaBadgeTooltip();
+            analyzeEditorContent();
+        });
         nivelSelect.addEventListener('change', analyzeEditorContent);
     })();
 </script>
