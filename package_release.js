@@ -34,7 +34,6 @@ const PACKAGE_JSON_RELEASE = {
   },
   scripts: {
     start: 'node backend_academico.js',
-    test: 'node test_guardian_paso1.js && node test_audit_paso2.js && node test_paso3_modules.js && node test_paso4_modules.js && node test_composer_v2.js',
   },
 };
 
@@ -107,21 +106,24 @@ function createZipArchive() {
     fs.unlinkSync(ZIP_PATH);
   }
 
-  const distWin = toWindowsPath(DIST_DIR).replace(/'/g, "''");
-  const zipWin = toWindowsPath(ZIP_PATH).replace(/'/g, "''");
-  const psCommand = `Compress-Archive -Path '${distWin}\\*' -DestinationPath '${zipWin}' -Force`;
-  const shell = process.platform === 'win32' ? 'powershell' : 'powershell.exe';
+  const pyScript = [
+    'import zipfile',
+    'from pathlib import Path',
+    `root = Path(${JSON.stringify(DIST_DIR)})`,
+    `zip_path = Path(${JSON.stringify(ZIP_PATH)})`,
+    "with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:",
+    '    for path in sorted(root.rglob("*")):',
+    '        if path.is_file():',
+    '            zf.write(path, path.relative_to(root).as_posix())',
+    'print("ZIP creado:", zip_path)',
+  ].join('\n');
 
+  const tmpPy = path.join(ROOT, '.package_zip_tmp.py');
+  fs.writeFileSync(tmpPy, pyScript, 'utf8');
   try {
-    execSync(`${shell} -NoProfile -Command "${psCommand}"`, { stdio: 'inherit' });
-    return;
-  } catch (powershellError) {
-    try {
-      execSync(`cd "${ROOT}" && zip -r "${ZIP_PATH}" dist_release`, { stdio: 'inherit' });
-      return;
-    } catch (zipError) {
-      throw new Error(`${powershellError.message} | ${zipError.message}`);
-    }
+    execSync(`python3 "${tmpPy}"`, { stdio: 'inherit' });
+  } finally {
+    if (fs.existsSync(tmpPy)) fs.unlinkSync(tmpPy);
   }
 }
 
