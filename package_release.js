@@ -8,6 +8,7 @@ const ZIP_PATH = path.join(ROOT, 'Asistente_Academico_V1.zip');
 
 const FILES_TO_COPY = [
   'backend_academico.js',
+  'sessions_store.js',
   'package.json',
   'iniciar_asistente.bat',
 ];

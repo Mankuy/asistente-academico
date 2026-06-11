@@ -3,6 +3,16 @@ const helmet = require('helmet');
 const Joi = require('joi');
 const path = require('path');
 const fs = require('fs');
+const {
+  listSessions,
+  getSession,
+  createSession,
+  updateSession,
+  deleteSession,
+  addChapter,
+  deleteChapter,
+  buildSessionContextForLlm,
+} = require('./sessions_store');
 
 const ENV_PATH = path.join(__dirname, '.env');
 
@@ -842,26 +852,57 @@ async function buildAcademicContextBlock(inputText) {
   return `[Academic Context — datos bibliográficos verificados vía Crossref]\n${condensed}`;
 }
 
-async function buildContextualizedUserText(inputText, norma, nivel) {
-  const normaVal = norma || 'APA 7ª ed.';
-  const nivelVal = nivel || 'Trabajo de Grado';
-  const academicBlock = await buildAcademicContextBlock(inputText);
-  const academicPart = academicBlock ? `\n\n${academicBlock}` : '';
-  return `[Contexto: El usuario está escribiendo un/a ${nivelVal} usando normas ${normaVal}]${academicPart}\n\n${inputText}`;
+function buildSessionContextBlock(sessionContext) {
+  if (!sessionContext || !sessionContext.previousChapters?.length) return '';
+
+  const lines = [
+    '[Session Context — Memoria de la sesión de escritura]',
+    `Proyecto: "${sessionContext.sessionName || 'Sin nombre'}"`,
+    `Capítulos ya corregidos en esta sesión: ${sessionContext.chapterCount || sessionContext.previousChapters.length}`,
+    '',
+    'MANTENÉ coherencia de tono académico, terminología, voz, nivel de registro y formato de citas con los fragmentos previos.',
+    'El texto nuevo debe leerse como continuación del mismo trabajo, no como un documento independiente.',
+    '',
+  ];
+
+  sessionContext.previousChapters.forEach((chapter, index) => {
+    lines.push(`--- Capítulo previo ${index + 1}: ${chapter.title} ---`);
+    if (chapter.optimizedExcerpt) {
+      lines.push(`Texto ya optimizado (extracto representativo):\n${chapter.optimizedExcerpt}`);
+    }
+    if (chapter.auditSummary) {
+      lines.push(`Criterios de corrección ya aplicados:\n${chapter.auditSummary}`);
+    }
+    lines.push('');
+  });
+
+  lines.push('INSTRUCCIÓN: Aplicá los mismos criterios editoriales y convenciones normativas que en los capítulos anteriores, salvo corrección de errores objetivos.');
+
+  return lines.join('\n');
 }
 
-async function buildRewriteUserText(inputText, norma, nivel, auditReport) {
-  const contextualized = await buildContextualizedUserText(inputText, norma, nivel);
+async function buildContextualizedUserText(inputText, norma, nivel, sessionContext = null) {
+  const normaVal = sessionContext?.norma || norma || 'APA 7ª ed.';
+  const nivelVal = sessionContext?.nivel || nivel || 'Trabajo de Grado';
+  const academicBlock = await buildAcademicContextBlock(inputText);
+  const academicPart = academicBlock ? `\n\n${academicBlock}` : '';
+  const sessionPart = buildSessionContextBlock(sessionContext);
+  const sessionBlock = sessionPart ? `\n\n${sessionPart}` : '';
+  return `[Contexto: El usuario está escribiendo un/a ${nivelVal} usando normas ${normaVal}]${sessionBlock}${academicPart}\n\n${inputText}`;
+}
+
+async function buildRewriteUserText(inputText, norma, nivel, auditReport, sessionContext = null) {
+  const contextualized = await buildContextualizedUserText(inputText, norma, nivel, sessionContext);
   return `${contextualized}\n\n--- INFORME DE AUDITORÍA (FASE 1) ---\n${auditReport}\n\n--- FIN INFORME ---\n\nReescribí el texto aplicando las correcciones del informe e incluí la sección ### Referencias Bibliográficas al final.`;
 }
 
-async function runAuditStage(inputText, norma, nivel) {
-  const contextualizedText = await buildContextualizedUserText(inputText, norma, nivel);
+async function runAuditStage(inputText, norma, nivel, sessionContext = null) {
+  const contextualizedText = await buildContextualizedUserText(inputText, norma, nivel, sessionContext);
   return callLlm(AUDIT_SYSTEM_PROMPT_V3, contextualizedText, LLM_MAX_TOKENS_AUDIT);
 }
 
-async function runRewriteStage(inputText, norma, nivel, auditReport) {
-  const userText = await buildRewriteUserText(inputText, norma, nivel, auditReport);
+async function runRewriteStage(inputText, norma, nivel, auditReport, sessionContext = null) {
+  const userText = await buildRewriteUserText(inputText, norma, nivel, auditReport, sessionContext);
   return callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, LLM_MAX_TOKENS_REWRITE);
 }
 
@@ -919,6 +960,29 @@ const suggestSchema = Joi.object({
     }),
   stage: Joi.string().valid('audit', 'rewrite', 'full').optional(),
   audit: Joi.string().trim().min(1).max(5000000).optional(),
+  sessionId: Joi.string().uuid().optional(),
+}).options({ stripUnknown: true });
+
+const sessionCreateSchema = Joi.object({
+  name: Joi.string().trim().max(120).allow('').optional(),
+  norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),
+  nivel: Joi.string().valid(...NIVEL_OPTIONS).optional(),
+  seedText: Joi.string().trim().max(5000000).allow('').optional(),
+}).options({ stripUnknown: true });
+
+const sessionUpdateSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(120).optional(),
+  norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),
+  nivel: Joi.string().valid(...NIVEL_OPTIONS).optional(),
+}).options({ stripUnknown: true });
+
+const chapterCreateSchema = Joi.object({
+  originalText: Joi.string().trim().min(1).max(5000000).required(),
+  audit: Joi.string().trim().min(1).max(5000000).required(),
+  optimizedText: Joi.string().trim().min(1).max(5000000).required(),
+  title: Joi.string().trim().max(120).allow('').optional(),
+  norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),
+  nivel: Joi.string().valid(...NIVEL_OPTIONS).optional(),
 }).options({ stripUnknown: true });
 
 app.get('/api/config', (req, res) => {
@@ -1087,6 +1151,86 @@ app.post('/api/config', asyncHandler(async (req, res) => {
   }
 }));
 
+app.get('/api/sessions', asyncHandler(async (req, res) => {
+  res.json({ sessions: listSessions() });
+}));
+
+app.post('/api/sessions', asyncHandler(async (req, res) => {
+  const { error, value } = sessionCreateSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  const session = createSession(value);
+  return res.status(201).json({ session });
+}));
+
+app.get('/api/sessions/:id', asyncHandler(async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) {
+    return res.status(404).json({ error: 'Sesión no encontrada' });
+  }
+  return res.json({ session });
+}));
+
+app.patch('/api/sessions/:id', asyncHandler(async (req, res) => {
+  const { error, value } = sessionUpdateSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  const session = updateSession(req.params.id, value);
+  if (!session) {
+    return res.status(404).json({ error: 'Sesión no encontrada' });
+  }
+  return res.json({ session });
+}));
+
+app.delete('/api/sessions/:id', asyncHandler(async (req, res) => {
+  const deleted = deleteSession(req.params.id);
+  if (!deleted) {
+    return res.status(404).json({ error: 'Sesión no encontrada' });
+  }
+  return res.json({ success: true });
+}));
+
+app.post('/api/sessions/:id/chapters', asyncHandler(async (req, res) => {
+  const { error, value } = chapterCreateSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  try {
+    const result = addChapter(req.params.id, value);
+    if (!result) {
+      return res.status(404).json({ error: 'Sesión no encontrada' });
+    }
+    return res.status(201).json(result);
+  } catch (chapterErr) {
+    return res.status(400).json({
+      error: 'No se pudo guardar el capítulo',
+      details: chapterErr.message,
+    });
+  }
+}));
+
+app.delete('/api/sessions/:id/chapters/:chapterId', asyncHandler(async (req, res) => {
+  const session = deleteChapter(req.params.id, req.params.chapterId);
+  if (!session) {
+    return res.status(404).json({ error: 'Sesión o capítulo no encontrado' });
+  }
+  return res.json({ session });
+}));
+
 app.post('/api/suggest', asyncHandler(async (req, res) => {
   try {
     const { error, value } = suggestSchema.validate(req.body);
@@ -1099,10 +1243,27 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     }
 
     const inputText = value.text.trim();
-    const norma = value.norma || 'APA 7ª ed.';
-    const nivel = value.nivel || 'Trabajo de Grado';
+    let norma = value.norma || 'APA 7ª ed.';
+    let nivel = value.nivel || 'Trabajo de Grado';
     const stage = value.stage || 'full';
     const provider = getLlmProvider(getLlmProviderId());
+
+    let sessionContext = null;
+    if (value.sessionId) {
+      const session = getSession(value.sessionId);
+      if (!session) {
+        return res.status(404).json({
+          error: 'Sesión no encontrada',
+          details: 'La sesión indicada no existe o fue eliminada.',
+        });
+      }
+      norma = norma || session.norma;
+      nivel = nivel || session.nivel;
+      sessionContext = buildSessionContextForLlm(session);
+      if (sessionContext) {
+        console.log(`[api/suggest] Sesión "${session.name}" · ${session.chapters.length} capítulo(s) previo(s)`);
+      }
+    }
 
     if (containsEvasionIntent(inputText)) {
       return res.json({
@@ -1118,13 +1279,14 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
 
     if (stage === 'audit') {
       console.log(`[api/suggest] Fase 1 (Auditoría) · ${provider.label} · ${getLlmModel()}`);
-      const audit = await runAuditStage(inputText, norma, nivel);
+      const audit = await runAuditStage(inputText, norma, nivel, sessionContext);
       return res.json({
         redirect: false,
         stage: 'audit',
         audit,
         norma,
         nivel,
+        sessionId: value.sessionId || null,
         provider: getLlmProviderId(),
         providerLabel: provider.label,
       });
@@ -1138,21 +1300,22 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         });
       }
       console.log(`[api/suggest] Fase 2 (Reescritura) · ${provider.label} · ${getLlmModel()}`);
-      const optimizedText = await runRewriteStage(inputText, norma, nivel, value.audit.trim());
+      const optimizedText = await runRewriteStage(inputText, norma, nivel, value.audit.trim(), sessionContext);
       return res.json({
         redirect: false,
         stage: 'rewrite',
         optimizedText,
         norma,
         nivel,
+        sessionId: value.sessionId || null,
         provider: getLlmProviderId(),
         providerLabel: provider.label,
       });
     }
 
     console.log(`[api/suggest] Análisis completo (2 etapas) · ${provider.label} · ${getLlmModel()}`);
-    const audit = await runAuditStage(inputText, norma, nivel);
-    const optimizedText = await runRewriteStage(inputText, norma, nivel, audit);
+    const audit = await runAuditStage(inputText, norma, nivel, sessionContext);
+    const optimizedText = await runRewriteStage(inputText, norma, nivel, audit, sessionContext);
 
     return res.json({
       redirect: false,
@@ -1164,6 +1327,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       suggestion: audit,
       norma,
       nivel,
+      sessionId: value.sessionId || null,
       provider: getLlmProviderId(),
       providerLabel: provider.label,
       explanation: 'Análisis en dos etapas (Auditoría + Reescritura) con System Prompt v3.0.',
@@ -1223,4 +1387,11 @@ app.listen(PORT, () => {
   }
 });
 
-module.exports = { app, SYSTEM_PROMPT_V2_3, ApiError, searchAcademicData, extractCitationQueries };
+module.exports = {
+  app,
+  SYSTEM_PROMPT_V2_3,
+  ApiError,
+  searchAcademicData,
+  extractCitationQueries,
+  buildSessionContextBlock,
+};

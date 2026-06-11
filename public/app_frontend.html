@@ -521,6 +521,151 @@
             padding: 1rem;
             overflow: auto;
         }
+        #sessions-aside {
+            flex: 0 0 240px;
+            min-width: 220px;
+            max-width: 280px;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-right: 0.75rem;
+        }
+        .sessions-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+        .sessions-header h2 {
+            font-size: 1rem;
+            margin: 0;
+        }
+        .sessions-help {
+            font-size: 0.72rem;
+            color: var(--muted);
+            line-height: 1.4;
+            margin: 0;
+        }
+        .btn-session-new {
+            width: 1.75rem;
+            height: 1.75rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--border);
+            background: var(--badge-bg);
+            cursor: pointer;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .btn-session-new:hover {
+            background: var(--badge-hover);
+            border-color: var(--accent);
+        }
+        .session-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            overflow-y: auto;
+            flex: 1;
+            min-height: 120px;
+        }
+        .session-empty {
+            font-size: 0.8rem;
+            color: var(--muted);
+            padding: 0.5rem 0;
+        }
+        .session-item {
+            border: 1px solid var(--border);
+            border-radius: 0.4rem;
+            padding: 0.45rem 0.5rem;
+            background: var(--bg-primary);
+            cursor: pointer;
+        }
+        .session-item.active {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 0.12rem var(--accent-ring);
+        }
+        .session-item-head {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.35rem;
+        }
+        .session-name {
+            flex: 1;
+            font-size: 0.82rem;
+            font-weight: 600;
+            line-height: 1.35;
+            word-break: break-word;
+        }
+        .session-name-input {
+            width: 100%;
+            font-size: 0.82rem;
+            font-weight: 600;
+            padding: 0.15rem 0.3rem;
+            border: 1px solid var(--accent);
+            border-radius: 0.25rem;
+            background: var(--bg-surface);
+            color: var(--text-primary);
+        }
+        .session-meta {
+            font-size: 0.68rem;
+            color: var(--muted);
+            margin-top: 0.2rem;
+        }
+        .session-actions {
+            display: flex;
+            gap: 0.15rem;
+            flex-shrink: 0;
+        }
+        .session-action-btn {
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 0.75rem;
+            padding: 0.1rem 0.2rem;
+            opacity: 0.75;
+        }
+        .session-action-btn:hover { opacity: 1; }
+        .chapters-panel {
+            border-top: 1px solid var(--border);
+            padding-top: 0.5rem;
+            margin-top: 0.25rem;
+        }
+        .chapters-panel.hidden { display: none; }
+        .chapters-panel h3 {
+            font-size: 0.8rem;
+            margin: 0 0 0.4rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .chapter-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+        .chapter-item {
+            font-size: 0.78rem;
+            padding: 0.35rem 0.45rem;
+            border-radius: 0.3rem;
+            border: 1px solid transparent;
+            background: var(--badge-bg);
+            cursor: pointer;
+        }
+        .chapter-item:hover,
+        .chapter-item.active {
+            border-color: var(--accent);
+        }
+        .chapter-saved-banner {
+            background: rgba(25, 135, 84, 0.12);
+            color: var(--status-ok);
+            border: 1px solid rgba(25, 135, 84, 0.25);
+            border-radius: 0.4rem;
+            padding: 0.5rem 0.65rem;
+            font-size: 0.8rem;
+            margin-bottom: 0.75rem;
+        }
         footer {
             background: var(--bg-surface);
             border-top: 1px solid var(--border);
@@ -533,6 +678,12 @@
             header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
             main { flex-direction: column; gap: 1rem; }
             .resizer { display: none; }
+            #sessions-aside {
+                flex: 1 1 auto !important;
+                width: auto !important;
+                max-width: none;
+                margin-right: 0;
+            }
             main > section,
             aside {
                 width: auto !important;
@@ -712,6 +863,20 @@
 </div>
 
 <main>
+    <aside id="sessions-aside">
+        <div class="sessions-header">
+            <h2>Sesiones</h2>
+            <button id="new-session-btn" class="btn-session-new" type="button" title="Nueva sesión" aria-label="Nueva sesión">+</button>
+        </div>
+        <p class="sessions-help">Cada corrección se guarda como capítulo. Al agregar más texto, el asistente mantiene el estilo de la sesión.</p>
+        <div id="sessions-list" class="session-list">
+            <p class="session-empty">Sin sesiones aún.</p>
+        </div>
+        <div id="chapters-panel" class="chapters-panel hidden">
+            <h3 id="chapters-panel-title">Capítulos</h3>
+            <div id="chapters-list" class="chapter-list"></div>
+        </div>
+    </aside>
     <section>
         <div class="editor-toolbar">
             <label for="editor">Editor de texto</label>
@@ -837,8 +1002,20 @@
         let currentConfig = { configured: false, maskedKey: null, model: 'openrouter/owl-alpha', provider: 'openrouter', providerLabel: 'OpenRouter', baseUrl: '', keyOptional: false, maskedKeys: {}, savedModels: {}, savedBaseUrls: {}, legacyApi: false };
         const DEBOUNCE_MS = 500;
         const CLIENT_RETRY_MAX = 4;
+        const ACTIVE_SESSION_KEY = 'academic-active-session';
         let lastAnalysisContext = null;
         let retryCountdownTimer = null;
+        let skipAutoAnalyze = false;
+        let activeSessionId = localStorage.getItem(ACTIVE_SESSION_KEY) || null;
+        let activeSessionData = null;
+        let sessionsIndex = [];
+        let activeChapterId = null;
+        let analysisInFlight = false;
+
+        const sessionsListEl = document.getElementById('sessions-list');
+        const chaptersPanelEl = document.getElementById('chapters-panel');
+        const chaptersListEl = document.getElementById('chapters-list');
+        const newSessionBtn = document.getElementById('new-session-btn');
 
         if (typeof pdfjsLib !== 'undefined') {
             pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -1201,8 +1378,16 @@
             `;
         }
 
-        function showDualAnalysis(audit, optimizedText) {
+        function showChapterSavedBanner(chapterTitle, chapterIndex) {
+            return `
+                <div class="chapter-saved-banner">
+                    Capítulo ${chapterIndex} guardado: <strong>${escapeHtml(chapterTitle)}</strong>. Podés agregar el siguiente fragmento en el editor.
+                </div>`;
+        }
+
+        function showDualAnalysis(audit, optimizedText, bannerHtml = '') {
             learningPanel.innerHTML = `
+                ${bannerHtml}
                 <div class="analysis-result">
                     <section class="analysis-section audit-section">
                         <h3>🔍 Auditoría y Sugerencias</h3>
@@ -1315,23 +1500,313 @@
             showError(message, { retryable, retryHint });
         }
 
+        async function apiJson(url, options = {}) {
+            const response = await fetch(url, options);
+            const data = await response.json().catch(() => ({}));
+            return { response, data };
+        }
+
+        function setActiveSession(sessionId, persist = true) {
+            activeSessionId = sessionId || null;
+            if (persist) {
+                if (activeSessionId) {
+                    localStorage.setItem(ACTIVE_SESSION_KEY, activeSessionId);
+                } else {
+                    localStorage.removeItem(ACTIVE_SESSION_KEY);
+                }
+            }
+        }
+
+        async function loadSessionDetails(sessionId) {
+            if (!sessionId) {
+                activeSessionData = null;
+                chaptersPanelEl.classList.add('hidden');
+                chaptersListEl.innerHTML = '';
+                return null;
+            }
+
+            const { response, data } = await apiJson(`/api/sessions/${sessionId}`);
+            if (!response.ok) {
+                activeSessionData = null;
+                if (response.status === 404) {
+                    setActiveSession(null);
+                }
+                return null;
+            }
+
+            activeSessionData = data.session;
+            if (activeSessionData.norma) normaSelect.value = activeSessionData.norma;
+            if (activeSessionData.nivel) nivelSelect.value = activeSessionData.nivel;
+            renderChaptersList(activeSessionData.chapters || []);
+            return activeSessionData;
+        }
+
+        async function refreshSessionsList(selectId = activeSessionId) {
+            const { response, data } = await apiJson('/api/sessions');
+            if (!response.ok) return;
+            sessionsIndex = data.sessions || [];
+            renderSessionsList(selectId);
+        }
+
+        function renderSessionsList(selectId = activeSessionId) {
+            if (!sessionsIndex.length) {
+                sessionsListEl.innerHTML = '<p class="session-empty">Sin sesiones aún. Escribí texto y se creará una automáticamente.</p>';
+                chaptersPanelEl.classList.add('hidden');
+                return;
+            }
+
+            sessionsListEl.innerHTML = sessionsIndex.map((session) => {
+                const isActive = session.id === selectId;
+                return `
+                    <div class="session-item ${isActive ? 'active' : ''}" data-session-id="${escapeAttr(session.id)}">
+                        <div class="session-item-head">
+                            <div class="session-name" data-session-name="${escapeAttr(session.id)}" title="Doble clic para renombrar">${escapeHtml(session.name)}</div>
+                            <div class="session-actions">
+                                <button type="button" class="session-action-btn session-rename-btn" data-session-id="${escapeAttr(session.id)}" title="Renombrar">✏️</button>
+                                <button type="button" class="session-action-btn session-delete-btn" data-session-id="${escapeAttr(session.id)}" title="Eliminar sesión">🗑️</button>
+                            </div>
+                        </div>
+                        <div class="session-meta">${session.chapterCount} capítulo(s)</div>
+                    </div>`;
+            }).join('');
+
+            sessionsListEl.querySelectorAll('.session-item').forEach((item) => {
+                item.addEventListener('click', (event) => {
+                    if (event.target.closest('.session-action-btn')) return;
+                    selectSession(item.dataset.sessionId);
+                });
+            });
+
+            sessionsListEl.querySelectorAll('.session-rename-btn').forEach((btn) => {
+                btn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    startRenameSession(btn.dataset.sessionId);
+                });
+            });
+
+            sessionsListEl.querySelectorAll('.session-delete-btn').forEach((btn) => {
+                btn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    deleteSessionById(btn.dataset.sessionId);
+                });
+            });
+
+            sessionsListEl.querySelectorAll('.session-name').forEach((nameEl) => {
+                nameEl.addEventListener('dblclick', (event) => {
+                    event.stopPropagation();
+                    startRenameSession(nameEl.dataset.sessionName);
+                });
+            });
+        }
+
+        function renderChaptersList(chapters) {
+            if (!activeSessionId || !chapters.length) {
+                chaptersPanelEl.classList.add('hidden');
+                chaptersListEl.innerHTML = '';
+                return;
+            }
+
+            chaptersPanelEl.classList.remove('hidden');
+            chaptersListEl.innerHTML = chapters.map((chapter) => `
+                <div class="chapter-item ${chapter.id === activeChapterId ? 'active' : ''}" data-chapter-id="${escapeAttr(chapter.id)}">
+                    ${chapter.index}. ${escapeHtml(chapter.title)}
+                </div>
+            `).join('');
+
+            chaptersListEl.querySelectorAll('.chapter-item').forEach((item) => {
+                item.addEventListener('click', () => {
+                    viewChapter(item.dataset.chapterId);
+                });
+            });
+        }
+
+        async function selectSession(sessionId) {
+            skipAutoAnalyze = true;
+            setActiveSession(sessionId);
+            activeChapterId = null;
+            await loadSessionDetails(sessionId);
+            await refreshSessionsList(sessionId);
+            editor.value = '';
+            learningPanel.innerHTML = activeSessionData
+                ? `<p>Sesión <strong>${escapeHtml(activeSessionData.name)}</strong> activa. Agregá un nuevo fragmento en el editor para el siguiente capítulo.</p>`
+                : '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+            setTimeout(() => { skipAutoAnalyze = false; }, 0);
+        }
+
+        async function createNewSession(seedText = '') {
+            const { response, data } = await apiJson('/api/sessions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    seedText,
+                    norma: normaSelect.value,
+                    nivel: nivelSelect.value,
+                }),
+            });
+
+            if (!response.ok) {
+                showError(data.error || 'No se pudo crear la sesión.');
+                return null;
+            }
+
+            setActiveSession(data.session.id);
+            activeSessionData = data.session;
+            await refreshSessionsList(data.session.id);
+            renderChaptersList([]);
+            return data.session;
+        }
+
+        async function ensureActiveSession(seedText) {
+            if (activeSessionId) {
+                if (!activeSessionData || activeSessionData.id !== activeSessionId) {
+                    await loadSessionDetails(activeSessionId);
+                }
+                if (activeSessionData) return activeSessionData;
+            }
+
+            const created = await createNewSession(seedText);
+            return created;
+        }
+
+        function startRenameSession(sessionId) {
+            const session = sessionsIndex.find((item) => item.id === sessionId);
+            const nameEl = sessionsListEl.querySelector(`.session-name[data-session-name="${sessionId}"]`);
+            if (!nameEl || !session) return;
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'session-name-input';
+            input.value = session.name;
+            input.maxLength = 120;
+
+            const finish = async (save) => {
+                const nextName = input.value.trim();
+                input.replaceWith(nameEl);
+                if (save && nextName && nextName !== session.name) {
+                    await renameSession(sessionId, nextName);
+                }
+            };
+
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') finish(true);
+                if (event.key === 'Escape') finish(false);
+            });
+            input.addEventListener('blur', () => finish(true));
+
+            nameEl.replaceWith(input);
+            input.focus();
+            input.select();
+        }
+
+        async function renameSession(sessionId, name) {
+            const { response, data } = await apiJson(`/api/sessions/${sessionId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+            });
+
+            if (!response.ok) {
+                showError(data.error || 'No se pudo renombrar la sesión.');
+                return;
+            }
+
+            if (activeSessionId === sessionId) {
+                activeSessionData = data.session;
+            }
+            await refreshSessionsList(activeSessionId);
+        }
+
+        async function deleteSessionById(sessionId) {
+            const session = sessionsIndex.find((item) => item.id === sessionId);
+            const label = session ? session.name : 'esta sesión';
+            if (!window.confirm(`¿Eliminar "${label}" y todos sus capítulos?`)) return;
+
+            const { response } = await apiJson(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+            if (!response.ok) {
+                showError('No se pudo eliminar la sesión.');
+                return;
+            }
+
+            if (activeSessionId === sessionId) {
+                setActiveSession(null);
+                activeSessionData = null;
+                activeChapterId = null;
+                editor.value = '';
+                learningPanel.innerHTML = '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+                chaptersPanelEl.classList.add('hidden');
+            }
+
+            await refreshSessionsList(activeSessionId);
+        }
+
+        async function saveChapterToSession(originalText, audit, optimizedText) {
+            const session = await ensureActiveSession(originalText);
+            if (!session) return null;
+
+            const { response, data } = await apiJson(`/api/sessions/${session.id}/chapters`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    originalText,
+                    audit,
+                    optimizedText,
+                    norma: normaSelect.value,
+                    nivel: nivelSelect.value,
+                }),
+            });
+
+            if (!response.ok) {
+                console.error('No se pudo guardar el capítulo', data);
+                return null;
+            }
+
+            activeSessionData = data.session;
+            setActiveSession(data.session.id);
+            await refreshSessionsList(data.session.id);
+            renderChaptersList(data.session.chapters || []);
+            return data.chapter;
+        }
+
+        function viewChapter(chapterId) {
+            if (!activeSessionData?.chapters) return;
+            const chapter = activeSessionData.chapters.find((item) => item.id === chapterId);
+            if (!chapter) return;
+
+            activeChapterId = chapterId;
+            renderChaptersList(activeSessionData.chapters);
+            skipAutoAnalyze = true;
+            editor.value = chapter.originalText;
+            showDualAnalysis(chapter.audit, chapter.optimizedText);
+            setTimeout(() => { skipAutoAnalyze = false; }, 0);
+        }
+
         async function fetchSuggestion(text, options = {}) {
+            if (analysisInFlight && !options.forceRetry) return;
             clearRetryCountdown();
+            analysisInFlight = true;
+
+            const session = await ensureActiveSession(text);
+            const sessionId = session?.id || activeSessionId;
+
             lastAnalysisContext = {
                 text,
                 norma: normaSelect.value,
                 nivel: nivelSelect.value,
+                sessionId,
             };
 
             try {
                 showLoading('Fase 1: Auditando normativa y estructura…', true);
 
-                const auditResult = await postSuggestStageWithRetry({
+                const auditPayload = {
                     text,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
                     stage: 'audit',
-                }, 'Fase 1');
+                };
+                if (sessionId) auditPayload.sessionId = sessionId;
+
+                const auditResult = await postSuggestStageWithRetry(auditPayload, 'Fase 1');
 
                 if (!auditResult.response.ok) {
                     handleStageError(auditResult, 'Fase 1');
@@ -1353,13 +1828,16 @@
                 lastAnalysisContext.audit = audit;
                 showLoading('Fase 2: Optimizando texto…', true);
 
-                const rewriteResult = await postSuggestStageWithRetry({
+                const rewritePayload = {
                     text,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
                     stage: 'rewrite',
                     audit,
-                }, 'Fase 2');
+                };
+                if (sessionId) rewritePayload.sessionId = sessionId;
+
+                const rewriteResult = await postSuggestStageWithRetry(rewritePayload, 'Fase 2');
 
                 if (!rewriteResult.response.ok) {
                     handleStageError(rewriteResult, 'Fase 2');
@@ -1374,10 +1852,25 @@
 
                 clearRetryCountdown();
                 lastAnalysisContext = null;
-                showDualAnalysis(audit, optimizedText);
+
+                const savedChapter = await saveChapterToSession(text, audit, optimizedText);
+                const banner = savedChapter
+                    ? showChapterSavedBanner(savedChapter.title, savedChapter.index)
+                    : '';
+
+                showDualAnalysis(audit, optimizedText, banner);
+
+                if (savedChapter) {
+                    skipAutoAnalyze = true;
+                    editor.value = '';
+                    activeChapterId = savedChapter.id;
+                    setTimeout(() => { skipAutoAnalyze = false; }, 0);
+                }
             } catch (error) {
                 console.error('Error al obtener sugerencia:', error);
                 showError(error.message || 'No se pudo completar el análisis.', { retryable: true });
+            } finally {
+                analysisInFlight = false;
             }
         }
 
@@ -1402,11 +1895,14 @@
         });
 
         function analyzeEditorContent() {
+            if (skipAutoAnalyze) return;
             clearTimeout(debounceTimer);
             const text = editor.value.trim();
 
             if (!text) {
-                learningPanel.innerHTML = '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+                if (!activeSessionId) {
+                    learningPanel.innerHTML = '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+                }
                 return;
             }
 
@@ -1627,6 +2123,22 @@
         });
 
         loadConfigStatus();
+        refreshSessionsList(activeSessionId).then(() => {
+            if (activeSessionId) {
+                loadSessionDetails(activeSessionId);
+            }
+        });
+
+        newSessionBtn.addEventListener('click', async () => {
+            skipAutoAnalyze = true;
+            const created = await createNewSession();
+            if (created) {
+                editor.value = '';
+                activeChapterId = null;
+                learningPanel.innerHTML = `<p>Nueva sesión <strong>${escapeHtml(created.name)}</strong>. Agregá el primer fragmento en el editor.</p>`;
+            }
+            setTimeout(() => { skipAutoAnalyze = false; }, 0);
+        });
 
         uploadBtn.addEventListener('click', function () {
             fileUpload.click();

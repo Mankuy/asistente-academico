@@ -1,5 +1,6 @@
 node_modules/
 .env
 dist_release/
+data/
 *.zip
 test_write.txt
