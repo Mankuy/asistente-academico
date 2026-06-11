@@ -1,0 +1,143 @@
+<thinking>
+I need to create a technical specifications document for an Ethical Academic Writing Assistant. The user wants four main parts:
+
+1) Internal logic architecture resistant to abuse: filters of intent based on semantic classification that block evasion attempts and redirect to legitimate improvement.
+2) Pedagogical and transparent frontend: rich editor with inline explanatory annotations, mandatory transparency badges, learning panel showing why each suggestion improves writing.
+3) System prompt aligned with integrity: explicit instructions to the LLM to act as an academic tutor that never suggests changes to evade detectors, but explains improvements linked to APA/MLA norms and communication principles.
+4) Methodological validation plan: operational success metrics focused on real skill improvement (VALUE rubrics, format error reduction, pre‑post tests with control groups).
+
+I should also incorporate the user's description: addressing anxiety about false positives via genuine skill improvement, sustainability, alignment with pedagogical frameworks, validation via real learning metrics.
+
+I will structure the document with sections, subsections, bullet points, and possibly tables for metrics. I need to ensure clarity and conciseness.
+
+I'll start with a brief overview, then each numbered part. I'll include implementation details (e.g., intent classifier, sandbox, redirect mechanism), frontend components (editor, annotations, badges, learning panel), system prompt content, and validation plan (study design, metrics, data collection, analysis).
+
+I'll keep the tone formal, technical, suitable for a specifications document.
+
+Now produce the thinking block, then final answer.
+**Especificaciones Técnicas – Asistente de Escritura Académica con IA Ética**  
+*Versión 1.0 – 26 sep 2025*  
+
+---
+
+## 1. Arquitectura de lógica interna resistente al abuso  
+
+| Componente | Función | Detalles de implementación |
+|------------|---------|-----------------------------|
+| **Intake Layer** | Recepción de la solicitud del usuario (texto + metadatos). | - Sanitizado de entrada (escape de HTML/JS). <br> - Extracción de intención mediante **clasificador semántico multietiqueta** (BERT‑base fine‑tuned en corpus de intenciones académicas y de evasión). |
+| **Intent Classifier** | Detecta si la solicitud pertenece a: <br>1️⃣ *Mejora legítima* (claridad, cohesión, formato). <br>2️⃣ *Evasión de detectores* (paráfrasis para ocultar plagio, manipulación de estilo). | - Umbral de confianza ≥ 0.85 para clasificar como “evasión”. <br> - Si se supera, se activa **Redirect Module**. |
+| **Redirect Module** | Bloquea la solicitud de evasión y propone una alternativa constructiva. | - Genera un mensaje de respuesta predefinido: “No puedo ayudar a modificar el texto para evadir detectores. Aquí tienes sugerencias para mejorar la claridad y cumplir con APA/MLA…”. <br> - Opcionalmente, ofrece un **tutorial interactivo** sobre paráfrasis ética. |
+| **Policy Engine** | Aplica reglas de negocio y de integridad. | - Lista de reglas (ej. “No sugerir sustitución de vocabulario que oculte fuentes”). <br> - Motor basado en **Drools** o equivalente para evaluar en tiempo real. |
+| **Feedback Loop** | Registra decisiones para re‑entrenamiento continuo. | - Log de intenciones, clasificaciones y acciones tomadas (anonimizado). <br> - Pipeline de re‑entrenamiento semanal con balance de clases para evitar sesgo. |
+| **Sandbox de ejecución** | Aísla la generación del LLM para impedir acceso a herramientas externas. | - Contenedor Docker con recursos limitados (CPU, memoria, sin red). <br> - Salida del LLM solo pasa por **Post‑process Filter** (elimina cualquier intento de inserción de código o markers de evasión). |
+
+**Objetivo de resistencia:** cualquier intento de solicitar cambios cuyo fin declarado sea evadir detectores será interceptado antes de llegar al modelo generativo y se redirigirá a una mejora pedagógica explícita.
+
+---
+
+## 2. Frontend pedagógico y transparente  
+
+### 2.1 Editor enriquecido  
+- **Base:** ProseMirror / Slate con soporte de Markdown y LaTeX.  
+- **Características:**  
+  - Resaltado de sintaxis APA/MLA (citas, referencias, encabezados).  
+  - Modo “sugerencia” que muestra cambios propuestos en formato *diff* (verde = inserción, rojo = eliminación).  
+  - Botón “Aplicar todo” y “Revisar uno a uno”.  
+
+### 2.2 Anotaciones explicativas inline  
+- Cada sugerencia incluye un **tooltip** y una **marca de bloque** (≈ [ℹ️]) que, al hacer clic, despliega:  
+  1. Razón de la mejora (ej. “Mejora la cohesión al usar un conectivo adversativo”).  
+  2. Norma o principio al que se refiere (APA 7ª ed., § 3.21; MLA 9ª ed., 2.1.3).  
+  3. Ejemplo de antes/después.  
+  4. Enlace a recurso de aprendizaje interno (micro‑lectura de 2‑3 min).  
+
+### 2.3 Badges de transparencia obligatorios  
+- Ubicados en la barra superior del editor:  
+  - **🔒 Fuente de datos** – indica que el modelo no ha sido entrenado con trabajos no publicados del usuario.  
+  - **📚 Base normativa** – muestra qué estilo (APA/MLA/Chicago) está activo.  
+  - **⚖️ Evaluación de intención** – indica el resultado del Intent Classifier (Legítimo / Bloqueado).  
+  - **💡 Sugerencia ética** – confirma que la propuesta no busca evadir detectores.  
+- Los badges son **no desactivables** y su estado se actualiza en tiempo real.  
+
+### 2.4 Panel de aprendizaje  
+- **Vista dividida:** editor a la izquierda, panel a la derecha.  
+- Componentes del panel:  
+  - **Historial de sugerencias** con estado (aplicada, descartada, modificada).  
+  - **Métrica de progreso** (porcentaje de sugerencias aplicadas vinculadas a cada rúbrica VALUE).  
+  - **Explicación detallada** de la sugerencia seleccionada (misma que el tooltip, pero expandida).  
+  - **Recursos recomendados** (vídeos, guías, ejercicios) basados en la laguna detectada.  
+  - **Botón “Pedir tutoría humana”** que abre un chat con un asistente humano (opcional, para casos complejos).  
+
+### 2.5 Accesibilidad y rendimiento  
+- WCAG 2.1 AA (contraste, navegación teclado, ARIA labels).  
+- Tiempo de respuesta < 800 ms para generar y mostrar una sugerencia (medido en dispositivo medio).  
+
+---
+
+## 3. System prompt alineado con la integridad  
+
+> **System Prompt (versión 2.3)**  
+> 
+> Eres un **Tutor Académico de Escritura** cuya única función es ayudar al usuario a mejorar la calidad, claridad y conformidad normativa de sus trabajos escritos, **nunca** facilitando cambios cuyo propósito sea evadir detectores de plagio o de IA.  
+> 
+> **Directrices de comportamiento:**  
+> 1. **Enfoque tutoril:** explica cada sugerencia vinculándola a una norma concreta (APA 7ª ed., MLA 9ª ed., Chicago 17ª) o a un principio de comunicación académica (coherencia, concisión, objetividad, uso adecuado de evidencia).  
+> 2. **Prohibición de evasión:** si detectas que la intención del usuario es modificar el texto para reducir la probabilidad de detección por herramientas anti‑plagio o de IA, **declina** la petición y ofrece una alternativa legítima (p.ej., mejorar la parafrásis citando correctamente).  
+> 3. **Transparencia:** incluye en tu respuesta una breve justificación (“Esta mejora se basa en …”) y, cuando sea pertinente, cita la sección de la guía de estilo correspondiente.  
+> 4. **Neutralidad y respeto:** no juzgue el contenido ideológico; centre su feedback en la forma y el rigor académico.  
+> 5. **Limitación de dominio:** si la consulta sale del ámbito de la escritura académica (p.ej., solicitud de código, consejo médico, etc.), responda que no puede ayudar y redirija a los recursos apropiados.  
+> 
+> **Salida esperada:**  
+> - Lista de sugerencias numeradas.  
+> - Para cada sugerencia: (a) texto original → texto propuesto, (b) explicación de por qué mejora la escritura, (c) referencia normativa o principio comunicativo, (d) enlace opcional a recurso de aprendizaje interno.  
+> - No incluya marcas de formato que puedan ser usadas para ofuscar contenido (p.ej., caracteres Unicode invisibles, zero‑width spaces).  
+
+*Nota:* Este prompt se inyecta al inicio de cada sesión y se mantiene inmutable; cualquier intento de sobrescribirlo mediante “prompt injection” es detectado por el **Intent Classifier** y bloqueado por el **Policy Engine**.
+
+---
+
+## 4. Plan de validación metodológico  
+
+### 4.1 Objetivo de validación  
+Demostrar que el Asistente produce **mejora real y sostenible** en las habilidades de escritura académica de los usuarios, reduciendo la ansiedad por falsos positivos mediante el desarrollo de competencia, no mediante trucos de evasión.
+
+### 4.2 Diseño de estudio  
+| Factor | Descripción |
+|--------|-------------|
+| **Participantes** | Estudiantes de pregrado y posgrado (n ≈ 300) de diversas disciplinas (ciencias sociales, STEM, humanidades). |
+| **Grupos** | - **Grupo Experimental (GE):** uso del Asistente durante 8 semanas (2 sesiones/semana de 30 min). <br> - **Grupo Control Activo (GC‑A):** acceso a un procesador de texto estándar + guías de estilo PDF. <br> - **Grupo Control Pasivo (GC‑P):** solo evaluaciones, sin intervención. |
+| **Intervención** | En GE, el Asistente se utiliza en tareas reales de redacción (ensayos, informes de laboratorio, revisiones bibliográficas). Se registra cada sesión (tiempo, número de sugerencias aplicadas). |
+| **Mediciones** | - **Pre‑test** y **post‑test** (semana 0 y semana 9). <br> - **Evaluaciones intermedias** (semana 4) para seguimiento de progreso. |
+| **Instrumentos** | 1. **Rúbricas VALUE** (Written Communication, Critical Thinking, Information Literacy) aplicadas por dos evaluadores ciegos (κ > 0.80). <br> 2. **Errores de formato** (citaciones, referencias, encabezados) contados automáticamente mediante script de validación APA/MLA. <br> 3. **Escala de ansiedad por falsos positivos** (adaptada de la FPI‑Scale, 5 ítems, Likert 1‑5). <br> 4. **Auto‑eficacia en escritura** (Escala de Escritura Académica, 10 ítems). |
+| **Análisis** | - ANOVA de medidas repetidas (tiempo × grupo) para cada métrica. <br> - Análisis de covarianza (ANCOVA) controlando por puntuación de pre‑test. <br> - Regresión lineal múltiple para predecir mejora en rúbricas VALUE a partir de número de sugerencias aplicadas y tiempo de uso. <br> - Análisis de supervivencia (tiempo hasta primera aplicación de sugerencia sin rechazo). |
+| **Criterios de éxito** | - **GE** muestra mejora estadísticamente significativa (p < 0.05) y tamaño de efecto medio (d ≥ 0.5) en: <br>   • Puntuación total VALUE. <br>   • Reducción ≥ 30 % de errores de formato. <br>   • Disminución ≥ 20 % en la escala de ansiedad por falsos positivos. <br> - No hay diferencias significativas entre GE y GC‑A en métricas de “evasión” (se verificará que ningún grupo incrementó intentos de parafrásis detectada como plagio). |
+| **Sostenibilidad a largo plazo** | Seguimiento a 3 meses y 6 meses post‑intervención (solo GE) para verificar retención de habilidades (re‑aplicación de rúbricas VALUE y escala de ansiedad). |
+| **Consideraciones éticas** | - Consentimiento informado. <br> - Anonimización de datos. <br> - Posibilidad de retirar el uso del Asistente en cualquier momento sin penalización. <br> - Aprobación por Comité de Ética de la Institución. |
+
+### 4.3 Métricas operacionales de éxito (para monitoreo continuo en producción)
+
+| Métrica | Definición | Umbral de aceptación |
+|---------|------------|----------------------|
+| **Ratio de sugerencias aplicadas** | (# sugerencias aceptadas / # sugerencias mostradas) | ≥ 0.45 |
+| **Tiempo medio por sesión** | Minutos activos en el editor | 20‑40 min (evita uso excesivo o abandono) |
+| **Reducción de errores de formato** | (errores_pre – errores_post) / errores_pre | ≥ 0.25 por sesión |
+| **Índice de transparencia** | % de sesiones donde todos los badges están visibles y sin alteraciones | 1.0 (100 %) |
+| **Tasa de bloqueo de intención de evasión** | # solicitudes de evasión detectadas y redirigidas / total solicitudes | ≥ 0.90 |
+| **Score de mejora VALUE** | Δ puntuación VALUE (post‑pre) | ≥ 0.3 dev.est. por mes de uso activo |
+| **Nivel de ansiedad por falsos positivos** | Cambio en escala FPI | ≤ ‑0.2 dev.est. por mes de uso activo |
+
+Estas métricas se recogen en tiempo real mediante eventos de frontend y se agregan en un dashboard de monitoreo (Grafana/Prometheus) para alertar ante desviaciones.
+
+---
+
+## 5. Notas de implementación y sostenibilidad  
+
+- **Escalabilidad:** backend basado en microservicios (Kubernetes). El Intent Classifier y el Policy Engine son servicios sin estado, escalables horizontalmente.  
+- **Actualización de normas:** módulo de normas descargable (JSON) que permite añadir nuevas ediciones de APA/MLA sin redeploy.  
+- **Auditoría de decisiones:** cada interacción se escribe en un log inmutable (append‑only storage tipo AWS QLDB) para revisión externa y mejora del modelo de intención.  
+- **Plan de mantenimiento:** ciclo de liberación cada 6 semanas (feature + métricas). Re‑entrenamiento del clasificador semántico trimestral con datos de producción balanceados.  
+- **Coste estimado:** infraestructura media (2 nodos t3.medium, 1 instancia de GPU para inferencia LLM ligera) ≈ US $150/mes; coste de operación predominante en licencias de LLM de código abierto (ej., Llama‑3‑8B) con inferencia en‑house.
+
+---  
+
+**Fin del documento**. Este conjunto de especificaciones brinda una guía completa para construir, desplegar y validar un Asistente de Escritura Académica que promueva la mejora genuina de habilidades, reduzca la ansiedad por falsos positivos y se mantenga alineado con los principios de integridad académica y transparencia pedagógica.

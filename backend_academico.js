@@ -1,0 +1,1226 @@
+const express = require('express');
+const helmet = require('helmet');
+const Joi = require('joi');
+const path = require('path');
+const fs = require('fs');
+
+const ENV_PATH = path.join(__dirname, '.env');
+
+function parseEnvLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+
+  const eq = trimmed.indexOf('=');
+  if (eq === -1) return null;
+
+  const key = trimmed.slice(0, eq).trim();
+  let value = trimmed.slice(eq + 1).trim();
+
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+
+  return { key, value };
+}
+
+function loadEnvFile() {
+  if (!fs.existsSync(ENV_PATH)) return;
+
+  const lines = fs.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const parsed = parseEnvLine(line);
+    if (!parsed) continue;
+
+    if (!(parsed.key in process.env)) {
+      process.env[parsed.key] = parsed.value;
+    }
+  }
+}
+
+function formatEnvValue(value) {
+  if (value === '') return '';
+  if (/[\s#"'\\]/.test(value)) {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  return value;
+}
+
+function saveEnvVariable(key, value) {
+  const serialized = formatEnvValue(value);
+  const lines = fs.existsSync(ENV_PATH)
+    ? fs.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)
+    : [];
+
+  let found = false;
+  const updated = lines.map((line) => {
+    const parsed = parseEnvLine(line);
+    if (!parsed) return line;
+    if (parsed.key === key) {
+      found = true;
+      return `${key}=${serialized}`;
+    }
+    return line;
+  });
+
+  if (!found) {
+    updated.push(`${key}=${serialized}`);
+  }
+
+  const content = updated.join('\n').replace(/\n+$/, '') + '\n';
+  fs.writeFileSync(ENV_PATH, content, 'utf8');
+  process.env[key] = value;
+}
+
+function parseJsonEnv(key, fallback = {}) {
+  const raw = (process.env[key] || '').trim();
+  if (!raw) return { ...fallback };
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : { ...fallback };
+  } catch {
+    return { ...fallback };
+  }
+}
+
+function saveJsonEnvVariable(key, obj) {
+  const serialized = JSON.stringify(obj);
+  saveEnvVariable(key, serialized);
+  process.env[key] = serialized;
+}
+
+function maskApiKey(apiKey) {
+  if (!apiKey || apiKey.length < 8) return null;
+  return `${apiKey.slice(0, 7)}…${apiKey.slice(-4)}`;
+}
+
+loadEnvFile();
+
+const LLM_PROVIDER_IDS = [
+  'openrouter',
+  'openai',
+  'anthropic',
+  'groq',
+  'nous',
+  'google',
+  'mistral',
+  'together',
+  'deepseek',
+  'cohere',
+  'perplexity',
+  'fireworks',
+  'xai',
+  'nvidia',
+  'azure',
+  'local',
+  'custom',
+];
+
+const LLM_PROVIDERS = {
+  openrouter: {
+    label: 'OpenRouter',
+    endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+    defaultModel: 'openrouter/owl-alpha',
+    docsUrl: 'https://openrouter.ai/keys',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  openai: {
+    label: 'OpenAI',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    defaultModel: 'gpt-4o-mini',
+    docsUrl: 'https://platform.openai.com/api-keys',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  anthropic: {
+    label: 'Anthropic',
+    endpoint: 'https://api.anthropic.com/v1/messages',
+    defaultModel: 'claude-3-5-sonnet-20241022',
+    docsUrl: 'https://console.anthropic.com/settings/keys',
+    apiStyle: 'anthropic',
+    keyOptional: false,
+  },
+  groq: {
+    label: 'Groq',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    defaultModel: 'llama-3.3-70b-versatile',
+    docsUrl: 'https://console.groq.com/keys',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  nous: {
+    label: 'Nous Research',
+    endpoint: 'https://inference-api.nousresearch.com/v1/chat/completions',
+    defaultModel: 'hermes-3-llama-3.1-70b',
+    docsUrl: 'https://nousresearch.com',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  google: {
+    label: 'Google Gemini',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    defaultModel: 'gemini-2.0-flash',
+    docsUrl: 'https://aistudio.google.com/apikey',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  mistral: {
+    label: 'Mistral AI',
+    endpoint: 'https://api.mistral.ai/v1/chat/completions',
+    defaultModel: 'mistral-small-latest',
+    docsUrl: 'https://console.mistral.ai/api-keys',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  together: {
+    label: 'Together AI',
+    endpoint: 'https://api.together.xyz/v1/chat/completions',
+    defaultModel: 'meta-llama/Llama-3-8b-chat-hf',
+    docsUrl: 'https://api.together.xyz/settings/api-keys',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    endpoint: 'https://api.deepseek.com/chat/completions',
+    defaultModel: 'deepseek-chat',
+    docsUrl: 'https://platform.deepseek.com/api_keys',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  cohere: {
+    label: 'Cohere',
+    endpoint: 'https://api.cohere.com/v2/chat',
+    defaultModel: 'command-r-plus',
+    docsUrl: 'https://dashboard.cohere.com/api-keys',
+    apiStyle: 'cohere',
+    keyOptional: false,
+  },
+  perplexity: {
+    label: 'Perplexity',
+    endpoint: 'https://api.perplexity.ai/chat/completions',
+    defaultModel: 'sonar',
+    docsUrl: 'https://www.perplexity.ai/settings/api',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  fireworks: {
+    label: 'Fireworks AI',
+    endpoint: 'https://api.fireworks.ai/inference/v1/chat/completions',
+    defaultModel: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
+    docsUrl: 'https://fireworks.ai/account/api-keys',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  xai: {
+    label: 'xAI (Grok)',
+    endpoint: 'https://api.x.ai/v1/chat/completions',
+    defaultModel: 'grok-2-latest',
+    docsUrl: 'https://console.x.ai',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  nvidia: {
+    label: 'NVIDIA NIM',
+    endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    defaultModel: 'meta/llama-3.1-70b-instruct',
+    docsUrl: 'https://build.nvidia.com',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  azure: {
+    label: 'Azure OpenAI',
+    endpoint: '',
+    defaultModel: 'gpt-4o-mini',
+    docsUrl: 'https://portal.azure.com',
+    apiStyle: 'openai',
+    keyOptional: false,
+  },
+  local: {
+    label: 'Local (Ollama / LM Studio)',
+    endpoint: 'http://localhost:11434/v1/chat/completions',
+    defaultModel: 'llama3.2',
+    docsUrl: 'https://ollama.com',
+    apiStyle: 'openai',
+    keyOptional: true,
+  },
+  custom: {
+    label: 'Custom (URL propia)',
+    endpoint: '',
+    defaultModel: '',
+    docsUrl: '',
+    apiStyle: 'openai',
+    keyOptional: true,
+  },
+};
+
+const CONFIG = {
+  LLM_PROVIDER: 'openrouter',
+  LLM_API_KEY: '',
+  LLM_MODEL: 'openrouter/owl-alpha',
+  LLM_BASE_URL: '',
+  LLM_KEYS_JSON: '{}',
+  LLM_MODELS_JSON: '{}',
+  LLM_BASE_URLS_JSON: '{}',
+};
+
+function getLlmProvider(providerId) {
+  return LLM_PROVIDERS[providerId] || LLM_PROVIDERS.openrouter;
+}
+
+function getLlmProviderId() {
+  const provider = (process.env.LLM_PROVIDER || CONFIG.LLM_PROVIDER || 'openrouter').trim();
+  return LLM_PROVIDER_IDS.includes(provider) ? provider : 'openrouter';
+}
+
+const PROVIDER_ENV_KEY_ALIASES = {
+  openrouter: ['OPENROUTER_API_KEY'],
+  openai: ['OPENAI_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY'],
+  groq: ['GROQ_API_KEY'],
+  google: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+  mistral: ['MISTRAL_API_KEY'],
+  together: ['TOGETHER_API_KEY'],
+  deepseek: ['DEEPSEEK_API_KEY'],
+  cohere: ['COHERE_API_KEY'],
+  perplexity: ['PERPLEXITY_API_KEY'],
+  fireworks: ['FIREWORKS_API_KEY'],
+  xai: ['XAI_API_KEY'],
+  nvidia: ['NVIDIA_API_KEY', 'NIM_API_KEY'],
+};
+
+function loadLlmKeysStore() {
+  const keys = parseJsonEnv('LLM_KEYS_JSON', {});
+
+  const legacyKey = (process.env.LLM_API_KEY || CONFIG.LLM_API_KEY || '').trim();
+  const legacyProvider = (process.env.LLM_PROVIDER || CONFIG.LLM_PROVIDER || 'openrouter').trim();
+  if (legacyKey && !keys[legacyProvider]) {
+    keys[legacyProvider] = legacyKey;
+  }
+
+  for (const [providerId, envNames] of Object.entries(PROVIDER_ENV_KEY_ALIASES)) {
+    if (keys[providerId]) continue;
+    for (const envName of envNames) {
+      const envValue = (process.env[envName] || '').trim();
+      if (envValue) {
+        keys[providerId] = envValue;
+        break;
+      }
+    }
+  }
+
+  return keys;
+}
+
+function loadLlmModelsStore() {
+  const models = parseJsonEnv('LLM_MODELS_JSON', {});
+  const legacyModel = (process.env.LLM_MODEL || CONFIG.LLM_MODEL || process.env.OPENROUTER_MODEL || CONFIG.OPENROUTER_MODEL || '').trim();
+  const legacyProvider = (process.env.LLM_PROVIDER || CONFIG.LLM_PROVIDER || 'openrouter').trim();
+  if (legacyModel && !models[legacyProvider]) {
+    models[legacyProvider] = legacyModel;
+  }
+  return models;
+}
+
+function loadLlmBaseUrlsStore() {
+  const urls = parseJsonEnv('LLM_BASE_URLS_JSON', {});
+  const legacyUrl = (process.env.LLM_BASE_URL || CONFIG.LLM_BASE_URL || '').trim();
+  const legacyProvider = (process.env.LLM_PROVIDER || CONFIG.LLM_PROVIDER || 'openrouter').trim();
+  if (
+    legacyUrl &&
+    (legacyProvider === 'local' || legacyProvider === 'custom' || legacyProvider === 'azure') &&
+    !urls[legacyProvider]
+  ) {
+    urls[legacyProvider] = legacyUrl;
+  }
+  return urls;
+}
+
+function getLlmApiKey(providerId = getLlmProviderId()) {
+  const keys = loadLlmKeysStore();
+  return (keys[providerId] || '').trim();
+}
+
+function getLlmModel(providerId = getLlmProviderId()) {
+  const models = loadLlmModelsStore();
+  return (
+    models[providerId] ||
+    process.env.LLM_MODEL ||
+    CONFIG.LLM_MODEL ||
+    getLlmProvider(providerId).defaultModel
+  ).trim();
+}
+
+function getLlmBaseUrl(providerId = getLlmProviderId()) {
+  const urls = loadLlmBaseUrlsStore();
+  const custom = (urls[providerId] || process.env.LLM_BASE_URL || CONFIG.LLM_BASE_URL || '').trim();
+  if (providerId === 'custom' || providerId === 'azure') return custom;
+  if (providerId === 'local') {
+    if (custom) return custom;
+    return LLM_PROVIDERS.local.endpoint;
+  }
+  return LLM_PROVIDERS[providerId].endpoint;
+}
+
+function getMaskedKeysForAllProviders() {
+  const keys = loadLlmKeysStore();
+  const masked = {};
+  for (const id of LLM_PROVIDER_IDS) {
+    masked[id] = maskApiKey(keys[id]);
+  }
+  return masked;
+}
+
+function isProviderConfigured(providerId) {
+  const provider = getLlmProvider(providerId);
+  const key = getLlmApiKey(providerId);
+  const model = getLlmModel(providerId);
+  if (!model) return false;
+  if (provider.keyOptional) {
+    if (providerId === 'local' || providerId === 'custom' || providerId === 'azure') {
+      return Boolean(getLlmBaseUrl(providerId));
+    }
+    return true;
+  }
+  return Boolean(key);
+}
+
+function isLlmConfigured() {
+  return isProviderConfigured(getLlmProviderId());
+}
+
+function buildProviderHeaders(providerId, apiKey) {
+  const headers = { 'Content-Type': 'application/json' };
+
+  if (providerId === 'anthropic') {
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    return headers;
+  }
+
+  if (providerId === 'cohere') {
+    headers.Authorization = `Bearer ${apiKey}`;
+    return headers;
+  }
+
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  if (providerId === 'openrouter') {
+    headers['HTTP-Referer'] = process.env.OPENROUTER_HTTP_REFERER || `http://localhost:${PORT}`;
+    headers['X-Title'] = 'Tutor Académico de Escritura';
+  }
+
+  return headers;
+}
+
+const LLM_MAX_TOKENS_AUDIT = 8000;
+const LLM_MAX_TOKENS_REWRITE = 10000;
+
+function buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens = LLM_MAX_TOKENS_REWRITE) {
+  if (providerId === 'anthropic') {
+    return {
+      model,
+      max_tokens: maxTokens,
+      temperature: 0.3,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userText }],
+    };
+  }
+
+  if (providerId === 'cohere') {
+    return {
+      model,
+      temperature: 0.3,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userText },
+      ],
+    };
+  }
+
+  return {
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userText },
+    ],
+    temperature: 0.3,
+    max_tokens: maxTokens,
+  };
+}
+
+function extractLlmContent(providerId, data) {
+  if (providerId === 'anthropic') {
+    const block = data.content?.find((item) => item.type === 'text');
+    return block?.text || '';
+  }
+
+  if (providerId === 'cohere') {
+    return data.message?.content?.[0]?.text || data.text || '';
+  }
+
+  return data.choices?.[0]?.message?.content || '';
+}
+
+const LLM_RETRY_MAX_ATTEMPTS = 5;
+const LLM_RETRY_BASE_MS = 1500;
+const LLM_RETRY_MAX_MS = 90000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableHttpStatus(status) {
+  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504 || status === 520 || status === 529;
+}
+
+function isRetryableErrorMessage(message) {
+  return /rate.?limit|too many requests|overloaded|temporarily unavailable|service unavailable|timeout|try again|retry after|capacity|throttl|busy/i.test(message || '');
+}
+
+function parseRetryAfterMs(response, errorMessage) {
+  const header = response?.headers?.get('retry-after') || response?.headers?.get('Retry-After');
+  if (header) {
+    const asNumber = Number(header);
+    if (!Number.isNaN(asNumber) && asNumber >= 0) {
+      return Math.min(Math.max(asNumber * 1000, 500), LLM_RETRY_MAX_MS);
+    }
+    const asDate = Date.parse(header);
+    if (!Number.isNaN(asDate)) {
+      return Math.min(Math.max(asDate - Date.now(), 500), LLM_RETRY_MAX_MS);
+    }
+  }
+
+  const patterns = [
+    /retry[- ]?after[:\s]+(\d+(?:\.\d+)?)\s*s/i,
+    /try again in (\d+(?:\.\d+)?)\s*seconds?/i,
+    /wait (\d+(?:\.\d+)?)\s*seconds?/i,
+    /(\d+(?:\.\d+)?)\s*seconds?.*(?:rate|limit|retry)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = String(errorMessage || '').match(pattern);
+    if (match) {
+      return Math.min(Math.max(parseFloat(match[1]) * 1000, 500), LLM_RETRY_MAX_MS);
+    }
+  }
+
+  return null;
+}
+
+function computeRetryDelayMs(attempt, retryAfterMs) {
+  if (retryAfterMs) return retryAfterMs;
+  const exponential = Math.min(LLM_RETRY_BASE_MS * (2 ** (attempt - 1)), LLM_RETRY_MAX_MS);
+  const jitter = Math.floor(Math.random() * 500);
+  return exponential + jitter;
+}
+
+async function callLlmOnce(systemPrompt, userText, maxTokens = LLM_MAX_TOKENS_REWRITE) {
+  const providerId = getLlmProviderId();
+  const provider = getLlmProvider(providerId);
+  const apiKey = getLlmApiKey();
+  const model = getLlmModel();
+  const endpoint = getLlmBaseUrl();
+
+  if (!provider.keyOptional && !apiKey) {
+    throw new ApiError(
+      'API Key no configurada',
+      503,
+      `Abrí la configuración (⚙️) y guardá tu API Key para ${provider.label}`,
+      { retryable: false }
+    );
+  }
+
+  if (!model) {
+    throw new ApiError('Modelo LLM no configurado', 503, 'Indicá un modelo en la configuración (⚙️).', { retryable: false });
+  }
+
+  if ((providerId === 'custom' || providerId === 'local' || providerId === 'azure') && !endpoint) {
+    throw new ApiError('URL del proveedor no configurada', 503, 'Ingresá la URL base para el proveedor seleccionado.', { retryable: false });
+  }
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: buildProviderHeaders(providerId, apiKey),
+      body: JSON.stringify(buildLlmRequestBody(providerId, systemPrompt, userText, model, maxTokens)),
+    });
+  } catch (networkErr) {
+    throw new ApiError(
+      `No se pudo conectar con ${provider.label}`,
+      502,
+      networkErr.message,
+      { retryable: true }
+    );
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (parseErr) {
+    const retryable = isRetryableHttpStatus(response.status);
+    throw new ApiError(
+      `${provider.label} devolvió una respuesta no válida`,
+      502,
+      `HTTP ${response.status}: respuesta no JSON`,
+      { retryable }
+    );
+  }
+
+  if (!response.ok) {
+    const providerMessage = data?.error?.message || data?.message || JSON.stringify(data);
+    const retryAfterMs = parseRetryAfterMs(response, providerMessage);
+    const retryable = isRetryableHttpStatus(response.status) || isRetryableErrorMessage(providerMessage);
+    throw new ApiError(
+      `${provider.label} rechazó la solicitud`,
+      response.status === 429 ? 429 : 502,
+      `HTTP ${response.status}: ${providerMessage}`,
+      { retryable, retryAfterMs }
+    );
+  }
+
+  const content = extractLlmContent(providerId, data);
+  if (!content) {
+    throw new ApiError(
+      `${provider.label} no devolvió contenido en la respuesta`,
+      502,
+      'La respuesta no incluyó texto utilizable.',
+      { retryable: true }
+    );
+  }
+
+  return content;
+}
+
+async function callLlm(systemPrompt, userText, maxTokens = LLM_MAX_TOKENS_REWRITE) {
+  const provider = getLlmProvider(getLlmProviderId());
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= LLM_RETRY_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await callLlmOnce(systemPrompt, userText, maxTokens);
+    } catch (err) {
+      lastError = err;
+      const canRetry = err instanceof ApiError && err.retryable && attempt < LLM_RETRY_MAX_ATTEMPTS;
+      if (!canRetry) throw err;
+
+      const waitMs = computeRetryDelayMs(attempt, err.retryAfterMs);
+      console.warn(
+        `[callLlm] ${provider.label}: reintento ${attempt + 1}/${LLM_RETRY_MAX_ATTEMPTS} en ${waitMs}ms — ${err.details || err.message}`
+      );
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastError;
+}
+
+function asyncHandler(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app_frontend.html'));
+});
+
+const ETHICS_CORE_PROMPT = `
+Directrices éticas inmutables (Policy Engine):
+1. **Prohibición de evasión:** NUNCA ayudes a evadir detectores de plagio o de IA. Si detectas esa intención, declina.
+2. **Dominio académico:** Solo escritura académica. Rechaza código, consejo médico, etc.
+3. **Neutralidad:** No juzgues ideología; evalúa forma, lógica, evidencia y normativa.
+4. **Sin ofuscación:** No uses caracteres Unicode invisibles ni zero-width spaces.
+`.trim();
+
+const SYSTEM_PROMPT_V3 = `
+System Prompt (versión 3.0 — Potencia Industrial)
+
+Eres un **Auditor Académico de Élite** y **Editor Científico Senior**. Tu estándar es publicación en revista indexada, no un simple resumen escolar.
+
+**Nivel de crítica: BRUTALMENTE HONESTO**
+- No seas perezoso ni complaciente. Si hay errores de lógica, citación, coherencia, tono o rigor, márcalos SIN PIEDAD.
+- Cada observación debe citar la norma (APA 7ª, MLA 9ª, Chicago 17ª, Vancouver) o principio académico violado.
+- Adapta la exigencia al [Contexto] de nivel y normativa provistos.
+- Objetivo: calidad de publicación científica.
+- **Contexto académico:** Si detectas citas, intenta utilizar el [Academic Context] provisto para completar datos faltantes (como años correctos, DOIs o páginas aproximadas). Si la página exacta no está en el contexto, mantén el marcador [XX]. NUNCA inventes números de página o DOIs.
+
+` + ETHICS_CORE_PROMPT;
+
+const AUDIT_SYSTEM_PROMPT_V3 = SYSTEM_PROMPT_V3 + `
+
+**MODO: AUDITORÍA (Fase 1) — SOLO DIAGNÓSTICO**
+
+Analiza el texto del usuario con rigor de revisor de comité editorial. NO reescribas el texto completo.
+
+**Salida OBLIGATORIA (solo auditoría):**
+1. **Resumen ejecutivo** (2-4 líneas): veredicto general sobre aptitud del texto.
+2. **Errores críticos** numerados: lógica, citación, plagio potencial, estructura, tono académico.
+3. **Sugerencias detalladas** numeradas. Para cada una:
+   - Fragmento problemático (cita literal)
+   - Corrección propuesta
+   - Justificación normativa o de rigor
+   - Severidad: [CRÍTICO] | [IMPORTANTE] | [MENOR]
+4. **Checklist normativo**: formato de citas, referencias, voz académica.
+5. **Verificación bibliográfica**: contrasta citas in-text con el [Academic Context] de Crossref; señala discrepancias de autor, año, DOI o páginas.
+
+PROHIBIDO incluir "Texto Final Optimizado" o reescritura completa. Solo auditoría y sugerencias.
+`;
+
+const REWRITE_SYSTEM_PROMPT_V3 = SYSTEM_PROMPT_V3 + `
+
+**MODO: REESCRITURA (Fase 2) — TEXTO OPTIMIZADO**
+
+Recibirás el texto original del usuario Y el informe de auditoría de la Fase 1.
+
+**Tu tarea:** Devuelve el **Texto Final Optimizado** seguido de referencias:
+- Aplica TODAS las correcciones legítimas del informe de auditoría.
+- Mantén la estructura de párrafos y la intención académica del autor.
+- Calidad de borrador listo para envío a tutor o revista.
+- Usa el [Academic Context] para completar metadatos bibliográficos reales cuando estén disponibles.
+- NO repitas la auditoría ni incluyas explicaciones meta.
+- Al final del texto optimizado, DEBES agregar una sección llamada '### Referencias Bibliográficas' que liste todas las obras citadas siguiendo estrictamente el formato APA o MLA indicado en el [Contexto].
+`;
+
+const SYSTEM_PROMPT_V2_3 = SYSTEM_PROMPT_V3;
+
+const EVASION_PATTERNS = [
+  /\bevad(ir|ir|iendo|as?|ar)\b/i,
+  /\bturnitin\b/i,
+  /\bzerogpt\b/i,
+  /\banti.?plagio\b/i,
+  /\bdetector.?(de|de\s+)?(ia|ai|plagio)\b/i,
+  /\bbypass\b/i,
+  /\burlar\b/i,
+  /\bengañar\b/i,
+  /\bpasar\s+(por|desapercibido)\b/i,
+  /\breducir\s+(la\s+)?(probabilidad|posibilidad)\s+de\s+detección\b/i,
+  /\bhumanizar\s+(texto|contenido)\b/i,
+  /\breescribir\s+para\s+(que\s+)?no\s+(sea\s+)?detectado\b/i,
+];
+
+const INTENT_MAP = {
+  evasion: EVASION_PATTERNS,
+  academic_help: [
+    /\bmejorar\b/i,
+    /\bcorregir\b/i,
+    /\bap(a|a\s+7|7ª?)\b/i,
+    /\bml(a|a\s+9|9ª?)\b/i,
+    /\bchicago\b/i,
+    /\bparafrasear\b/i,
+    /\bcitar\b/i,
+    /\breferenciar\b/i,
+    /\bcoherencia\b/i,
+    /\bconcisión\b/i,
+    /\bestructura\b/i,
+    /\btesis\b/i,
+    /\bargumento\b/i,
+  ],
+};
+
+class ApiError extends Error {
+  constructor(message, statusCode = 502, details = null, options = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.statusCode = statusCode;
+    this.details = details;
+    this.retryable = Boolean(options.retryable);
+    this.retryAfterMs = options.retryAfterMs ?? null;
+  }
+}
+
+function classifyIntent(text) {
+  const normalized = text.toLowerCase().trim();
+
+  for (const [intent, patterns] of Object.entries(INTENT_MAP)) {
+    for (const pattern of patterns) {
+      if (pattern.test(normalized)) {
+        return intent;
+      }
+    }
+  }
+  return 'unknown';
+}
+
+function containsEvasionIntent(text) {
+  return classifyIntent(text) === 'evasion';
+}
+
+const NORMATIVA_OPTIONS = ['APA 7ª ed.', 'MLA 9ª ed.', 'Chicago 17ª', 'Vancouver'];
+const NIVEL_OPTIONS = [
+  'Trabajo de Grado',
+  'Trabajo Final de Grado',
+  'Ensayo Universitario',
+  'Trabajo de Especialización de Posgrado',
+  'Trabajo de Maestría',
+  'Tesis de Maestría',
+  'Trabajo de Doctorado',
+  'Tesis de Doctorado',
+  'Trabajo de Postdoctorado',
+  'Tesis de Postdoctorado',
+  'Artículo Científico',
+];
+
+const CITATION_IN_TEXT_REGEX = /\(([A-Za-zÀ-ÿ]+, \d{4}[a-z]?)\)/g;
+const MAX_ACADEMIC_LOOKUPS = 6;
+
+function extractCitationQueries(inputText) {
+  const queries = new Set();
+  const regex = new RegExp(CITATION_IN_TEXT_REGEX.source, 'g');
+  let match;
+  while ((match = regex.exec(inputText)) !== null) {
+    queries.add(match[1].trim());
+    if (queries.size >= MAX_ACADEMIC_LOOKUPS) break;
+  }
+  return [...queries];
+}
+
+function formatCrossrefWork(item) {
+  const title = item.title?.[0] || 'Sin título';
+  const authors = (item.author || [])
+    .map((author) => `${author.family || ''}${author.given ? `, ${author.given}` : ''}`.trim())
+    .filter(Boolean)
+    .join('; ') || 'Autor desconocido';
+  const year = item.issued?.['date-parts']?.[0]?.[0] || 's.f.';
+  const doi = item.DOI ? `https://doi.org/${item.DOI}` : 'Sin DOI';
+  const pages = item.page || 'Sin páginas';
+  const publisher = item.publisher || 'Editorial no disponible';
+  return `Título: ${title} | Autores: ${authors} | Año: ${year} | Editorial: ${publisher} | DOI: ${doi} | Páginas: ${pages}`;
+}
+
+async function searchAcademicData(query) {
+  try {
+    const url = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&select=title,author,issued,DOI,publisher,page&rows=3`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'AsistenteAcademico/1.0 (academic-writing-tool; mailto:academico@localhost)',
+        Accept: 'application/json',
+      },
+    });
+    if (!response.ok) return '';
+
+    const data = await response.json();
+    const items = data?.message?.items || [];
+    if (!items.length) return '';
+
+    return items
+      .map((item, index) => `${index + 1}. ${formatCrossrefWork(item)}`)
+      .join('\n');
+  } catch {
+    return '';
+  }
+}
+
+async function buildAcademicContextBlock(inputText) {
+  const queries = extractCitationQueries(inputText);
+  if (!queries.length) return '';
+
+  const lookupResults = await Promise.all(
+    queries.map(async (query) => {
+      const result = await searchAcademicData(query);
+      return result ? `Consulta "${query}":\n${result}` : '';
+    })
+  );
+
+  const condensed = lookupResults.filter(Boolean).join('\n\n');
+  if (!condensed) return '';
+
+  return `[Academic Context — datos bibliográficos verificados vía Crossref]\n${condensed}`;
+}
+
+async function buildContextualizedUserText(inputText, norma, nivel) {
+  const normaVal = norma || 'APA 7ª ed.';
+  const nivelVal = nivel || 'Trabajo de Grado';
+  const academicBlock = await buildAcademicContextBlock(inputText);
+  const academicPart = academicBlock ? `\n\n${academicBlock}` : '';
+  return `[Contexto: El usuario está escribiendo un/a ${nivelVal} usando normas ${normaVal}]${academicPart}\n\n${inputText}`;
+}
+
+async function buildRewriteUserText(inputText, norma, nivel, auditReport) {
+  const contextualized = await buildContextualizedUserText(inputText, norma, nivel);
+  return `${contextualized}\n\n--- INFORME DE AUDITORÍA (FASE 1) ---\n${auditReport}\n\n--- FIN INFORME ---\n\nReescribí el texto aplicando las correcciones del informe e incluí la sección ### Referencias Bibliográficas al final.`;
+}
+
+async function runAuditStage(inputText, norma, nivel) {
+  const contextualizedText = await buildContextualizedUserText(inputText, norma, nivel);
+  return callLlm(AUDIT_SYSTEM_PROMPT_V3, contextualizedText, LLM_MAX_TOKENS_AUDIT);
+}
+
+async function runRewriteStage(inputText, norma, nivel, auditReport) {
+  const userText = await buildRewriteUserText(inputText, norma, nivel, auditReport);
+  return callLlm(REWRITE_SYSTEM_PROMPT_V3, userText, LLM_MAX_TOKENS_REWRITE);
+}
+
+const configSaveSchema = Joi.object({
+  provider: Joi.string()
+    .trim()
+    .valid(...LLM_PROVIDER_IDS)
+    .required()
+    .messages({
+      'any.only': 'Proveedor de IA no válido.',
+      'any.required': 'Debe seleccionar un proveedor de IA.',
+    }),
+  apiKey: Joi.string().trim().allow('').max(500).optional(),
+  apiKeys: Joi.object()
+    .pattern(Joi.string().valid(...LLM_PROVIDER_IDS), Joi.string().trim().allow('').max(500))
+    .optional(),
+  model: Joi.string()
+    .trim()
+    .min(1)
+    .max(300)
+    .required()
+    .messages({
+      'string.empty': 'El modelo no puede estar vacío.',
+      'string.max': 'El identificador del modelo es demasiado largo.',
+      'any.required': 'El modelo es obligatorio.',
+    }),
+  openRouterModel: Joi.string().trim().min(1).max(300).optional(),
+  openRouterApiKey: Joi.string().trim().allow('').max(500).optional(),
+  baseUrl: Joi.string().trim().allow('').max(500).optional(),
+}).options({ stripUnknown: true });
+
+const suggestSchema = Joi.object({
+  text: Joi.string()
+    .min(1)
+    .max(5000000)
+    .required()
+    .messages({
+      'string.base': 'El campo "text" debe ser una cadena de texto.',
+      'string.empty': 'El campo "text" no puede estar vacío.',
+      'string.min': 'El texto debe tener al menos 1 carácter.',
+      'string.max': 'El texto excede el límite máximo de 5,000,000 caracteres.',
+      'any.required': 'El campo "text" es obligatorio.',
+    }),
+  norma: Joi.string()
+    .valid(...NORMATIVA_OPTIONS)
+    .optional()
+    .messages({
+      'any.only': 'La normativa seleccionada no es válida.',
+    }),
+  nivel: Joi.string()
+    .valid(...NIVEL_OPTIONS)
+    .optional()
+    .messages({
+      'any.only': 'El nivel académico seleccionado no es válido.',
+    }),
+  stage: Joi.string().valid('audit', 'rewrite', 'full').optional(),
+  audit: Joi.string().trim().min(1).max(5000000).optional(),
+}).options({ stripUnknown: true });
+
+app.get('/api/config', (req, res) => {
+  const providerId = getLlmProviderId();
+  const provider = getLlmProvider(providerId);
+  const apiKey = getLlmApiKey(providerId);
+  const model = getLlmModel(providerId);
+  const baseUrl = getLlmBaseUrl(providerId);
+  const maskedKeys = getMaskedKeysForAllProviders();
+  const savedModels = loadLlmModelsStore();
+  const savedBaseUrls = loadLlmBaseUrlsStore();
+
+  res.json({
+    configured: isLlmConfigured(),
+    maskedKey: maskApiKey(apiKey),
+    maskedKeys,
+    savedModels,
+    savedBaseUrls,
+    provider: providerId,
+    providerLabel: provider.label,
+    model,
+    baseUrl,
+    defaultModel: provider.defaultModel,
+    keyOptional: provider.keyOptional,
+    docsUrl: provider.docsUrl,
+    providers: LLM_PROVIDER_IDS.map((id) => {
+      const p = getLlmProvider(id);
+      return {
+        id,
+        label: p.label,
+        defaultModel: p.defaultModel,
+        keyOptional: p.keyOptional,
+        docsUrl: p.docsUrl,
+        hasKey: p.keyOptional ? true : Boolean(getLlmApiKey(id)),
+        maskedKey: maskedKeys[id],
+        savedModel: savedModels[id] || p.defaultModel,
+        configured: isProviderConfigured(id),
+      };
+    }),
+  });
+});
+
+function normalizeConfigPayload(body = {}) {
+  const payload = { ...body };
+
+  if (!payload.model?.trim() && payload.openRouterModel?.trim()) {
+    payload.model = payload.openRouterModel.trim();
+  }
+
+  if (!payload.provider?.trim()) {
+    payload.provider = 'openrouter';
+  }
+
+  if (payload.openRouterApiKey?.trim()) {
+    payload.apiKeys = { ...(payload.apiKeys || {}), openrouter: payload.openRouterApiKey.trim() };
+    if (!payload.apiKey?.trim()) {
+      payload.apiKey = payload.openRouterApiKey.trim();
+    }
+  }
+
+  return payload;
+}
+
+app.post('/api/config', asyncHandler(async (req, res) => {
+  const normalizedBody = normalizeConfigPayload(req.body);
+  const { error, value } = configSaveSchema.validate(normalizedBody);
+
+  if (error) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: error.details.map((d) => d.message),
+    });
+  }
+
+  const provider = getLlmProvider(value.provider);
+  const keys = loadLlmKeysStore();
+  const models = loadLlmModelsStore();
+  const baseUrls = loadLlmBaseUrlsStore();
+
+  if (value.apiKeys && typeof value.apiKeys === 'object') {
+    for (const [providerId, keyValue] of Object.entries(value.apiKeys)) {
+      if (keyValue && keyValue.trim()) {
+        keys[providerId] = keyValue.trim();
+      }
+    }
+  }
+
+  const singleKey = value.apiKey?.trim() || '';
+  if (singleKey) {
+    keys[value.provider] = singleKey;
+  }
+
+  const existingKey = getLlmApiKey(value.provider);
+  const hasKeyForProvider = Boolean(keys[value.provider] || existingKey);
+
+  if (!provider.keyOptional && !hasKeyForProvider) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: [`Ingresá una API Key de ${provider.label} (en el banco de keys o para el proveedor activo).`],
+    });
+  }
+
+  const nextBaseUrl = value.baseUrl?.trim() || baseUrls[value.provider] || '';
+  if ((value.provider === 'local' || value.provider === 'custom' || value.provider === 'azure') && !nextBaseUrl) {
+    return res.status(400).json({
+      error: 'Validación fallida',
+      details: ['La URL base es obligatoria para Local, Custom o Azure OpenAI.'],
+    });
+  }
+
+  try {
+    models[value.provider] = value.model;
+    if (value.baseUrl?.trim()) {
+      baseUrls[value.provider] = value.baseUrl.trim();
+    }
+
+    saveJsonEnvVariable('LLM_KEYS_JSON', keys);
+    saveJsonEnvVariable('LLM_MODELS_JSON', models);
+    saveJsonEnvVariable('LLM_BASE_URLS_JSON', baseUrls);
+
+    saveEnvVariable('LLM_PROVIDER', value.provider);
+    CONFIG.LLM_PROVIDER = value.provider;
+
+    saveEnvVariable('LLM_MODEL', value.model);
+    CONFIG.LLM_MODEL = value.model;
+
+    const activeKey = keys[value.provider] || existingKey;
+    if (activeKey) {
+      saveEnvVariable('LLM_API_KEY', activeKey);
+      CONFIG.LLM_API_KEY = activeKey;
+    }
+
+    if (nextBaseUrl) {
+      saveEnvVariable('LLM_BASE_URL', nextBaseUrl);
+      CONFIG.LLM_BASE_URL = nextBaseUrl;
+    }
+
+    if (keys.openrouter) {
+      saveEnvVariable('OPENROUTER_API_KEY', keys.openrouter);
+    }
+    if (models.openrouter) {
+      saveEnvVariable('OPENROUTER_MODEL', models.openrouter);
+    }
+
+    const maskedKeys = getMaskedKeysForAllProviders();
+
+    return res.json({
+      success: true,
+      message: 'Configuración guardada correctamente en .env',
+      configured: isLlmConfigured(),
+      maskedKey: maskApiKey(activeKey),
+      maskedKeys,
+      savedModels: models,
+      savedBaseUrls: baseUrls,
+      provider: value.provider,
+      providerLabel: provider.label,
+      model: value.model,
+      baseUrl: nextBaseUrl,
+    });
+  } catch (writeErr) {
+    console.error('[api/config] Error al escribir .env:', writeErr);
+    return res.status(500).json({
+      error: 'No se pudo guardar la configuración',
+      details: writeErr.message,
+    });
+  }
+}));
+
+app.post('/api/suggest', asyncHandler(async (req, res) => {
+  try {
+    const { error, value } = suggestSchema.validate(req.body);
+
+    if (error) {
+      return res.status(400).json({
+        error: 'Validación fallida',
+        details: error.details.map((d) => d.message),
+      });
+    }
+
+    const inputText = value.text.trim();
+    const norma = value.norma || 'APA 7ª ed.';
+    const nivel = value.nivel || 'Trabajo de Grado';
+    const stage = value.stage || 'full';
+    const provider = getLlmProvider(getLlmProviderId());
+
+    if (containsEvasionIntent(inputText)) {
+      return res.json({
+        redirect: true,
+        message: 'Por favor, enfócate en aprender de forma honesta. Puedo ayudarte a mejorar tu escritura siguiendo normas académicas (APA, MLA, Chicago) y principios de comunicación clara.',
+      });
+    }
+
+    const citationQueries = extractCitationQueries(inputText);
+    if (citationQueries.length) {
+      console.log(`[api/suggest] Crossref lookup · ${citationQueries.length} cita(s): ${citationQueries.join(', ')}`);
+    }
+
+    if (stage === 'audit') {
+      console.log(`[api/suggest] Fase 1 (Auditoría) · ${provider.label} · ${getLlmModel()}`);
+      const audit = await runAuditStage(inputText, norma, nivel);
+      return res.json({
+        redirect: false,
+        stage: 'audit',
+        audit,
+        norma,
+        nivel,
+        provider: getLlmProviderId(),
+        providerLabel: provider.label,
+      });
+    }
+
+    if (stage === 'rewrite') {
+      if (!value.audit || !value.audit.trim()) {
+        return res.status(400).json({
+          error: 'Validación fallida',
+          details: ['Se requiere el informe de auditoría (audit) para la fase de reescritura.'],
+        });
+      }
+      console.log(`[api/suggest] Fase 2 (Reescritura) · ${provider.label} · ${getLlmModel()}`);
+      const optimizedText = await runRewriteStage(inputText, norma, nivel, value.audit.trim());
+      return res.json({
+        redirect: false,
+        stage: 'rewrite',
+        optimizedText,
+        norma,
+        nivel,
+        provider: getLlmProviderId(),
+        providerLabel: provider.label,
+      });
+    }
+
+    console.log(`[api/suggest] Análisis completo (2 etapas) · ${provider.label} · ${getLlmModel()}`);
+    const audit = await runAuditStage(inputText, norma, nivel);
+    const optimizedText = await runRewriteStage(inputText, norma, nivel, audit);
+
+    return res.json({
+      redirect: false,
+      stage: 'full',
+      audit,
+      optimizedText,
+      original: inputText,
+      suggested: optimizedText,
+      suggestion: audit,
+      norma,
+      nivel,
+      provider: getLlmProviderId(),
+      providerLabel: provider.label,
+      explanation: 'Análisis en dos etapas (Auditoría + Reescritura) con System Prompt v3.0.',
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error(`[api/suggest] ${err.statusCode}:`, err.message, err.details || '');
+      return res.status(err.statusCode).json({
+        error: err.message,
+        details: err.details,
+        retryable: Boolean(err.retryable),
+        retryAfterMs: err.retryAfterMs ?? null,
+      });
+    }
+
+    console.error('[api/suggest] Error inesperado:', err);
+    return res.status(500).json({
+      error: 'Error interno al procesar la solicitud',
+      details: err.message,
+    });
+  }
+}));
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'Ruta no encontrada' });
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({
+      error: 'JSON inválido en el cuerpo de la petición',
+      details: err.message,
+    });
+  }
+
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return res.status(413).json({
+      error: 'El documento es demasiado grande',
+      details: 'El límite actual del servidor es 50 MB. Intentá dividir el texto o subir un archivo más liviano.',
+    });
+  }
+
+  console.error('[global]', err);
+  res.status(500).json({
+    error: 'Error interno del servidor',
+    details: err.message,
+  });
+});
+
+app.listen(PORT, () => {
+  const provider = getLlmProvider(getLlmProviderId());
+  const configured = isLlmConfigured();
+  console.log(`Servidor escuchando en http://localhost:${PORT}`);
+  console.log(`Proveedor LLM: ${provider.label} · Modelo: ${getLlmModel() || '(sin configurar)'}`);
+  if (!configured) {
+    console.warn('ADVERTENCIA: Proveedor LLM no configurado. Configuralo desde ⚙️ en el frontend.');
+  }
+});
+
+module.exports = { app, SYSTEM_PROMPT_V2_3, ApiError, searchAcademicData, extractCitationQueries };
