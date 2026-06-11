@@ -137,6 +137,7 @@
         header,
         footer,
         main > section,
+        #sessions-aside,
         aside,
         #editor,
         .settings-modal,
@@ -481,21 +482,37 @@
             min-width: 0;
         }
         .resizer {
-            width: 5px;
+            width: 6px;
+            min-width: 6px;
             cursor: col-resize;
             background: var(--border);
             flex-shrink: 0;
-            margin: 0 0.5rem;
-            border-radius: 2px;
-            transition: background-color 0.2s ease;
+            margin: 0 0.35rem;
+            border-radius: 3px;
+            align-self: stretch;
+            position: relative;
+            touch-action: none;
+            transition: background-color 0.15s ease;
+        }
+        .resizer::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: -7px;
+            right: -7px;
+            cursor: col-resize;
         }
         .resizer:hover,
-        body.resizing .resizer {
+        body.resizing .resizer.active-resizer {
             background: var(--accent);
         }
         body.resizing {
-            cursor: col-resize;
+            cursor: col-resize !important;
             user-select: none;
+        }
+        body.resizing * {
+            cursor: col-resize !important;
         }
         #editor {
             width: 100%;
@@ -522,13 +539,11 @@
             overflow: auto;
         }
         #sessions-aside {
-            flex: 0 0 240px;
-            min-width: 220px;
-            max-width: 280px;
+            flex: 0 0 auto;
+            min-width: 0;
             display: flex;
             flex-direction: column;
             gap: 0.5rem;
-            margin-right: 0.75rem;
         }
         .sessions-header {
             display: flex;
@@ -915,6 +930,7 @@
             <div id="chapters-list" class="chapter-list"></div>
         </div>
     </aside>
+    <div id="resizer-sessions" class="resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar panel de sesiones"></div>
     <section>
         <div class="editor-toolbar">
             <label for="editor">Editor de texto</label>
@@ -950,7 +966,7 @@
         </div>
         <textarea id="editor" placeholder="Escriba su texto aquí…" rows="10"></textarea>
     </section>
-    <div id="resizer" class="resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar paneles"></div>
+    <div id="resizer-editor" class="resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar editor y panel de aprendizaje"></div>
     <aside id="learning-aside">
         <h2 style="margin-bottom:0.5rem; font-size:1.1rem;">Panel de aprendizaje</h2>
         <div id="learning-panel">
@@ -1029,12 +1045,20 @@
         const themeBtn = document.getElementById('theme-btn');
         const mainEl = document.querySelector('main');
         const editorSection = mainEl.querySelector('section');
+        const sessionsAside = document.getElementById('sessions-aside');
         const learningAside = document.getElementById('learning-aside');
-        const resizer = document.getElementById('resizer');
+        const resizerSessions = document.getElementById('resizer-sessions');
+        const resizerEditor = document.getElementById('resizer-editor');
         let debounceTimer = null;
-        let isResizing = false;
+        let activeResizer = null;
         const THEME_KEY = 'academic-theme';
-        const PANEL_WIDTH_KEY = 'academic-panel-width';
+        const SESSIONS_WIDTH_KEY = 'academic-sessions-width';
+        const EDITOR_WIDTH_KEY = 'academic-editor-width';
+        const LEGACY_PANEL_WIDTH_KEY = 'academic-panel-width';
+        const MAIN_HORIZONTAL_PADDING = 32;
+        const DEFAULT_SESSIONS_WIDTH = 240;
+        const DEFAULT_EDITOR_WIDTH = 520;
+        const MIN_SESSIONS_WIDTH = 180;
         const MIN_SECTION_WIDTH = 280;
         const MIN_ASIDE_WIDTH = 260;
         let currentConfig = { configured: false, maskedKey: null, model: 'openrouter/owl-alpha', provider: 'openrouter', providerLabel: 'OpenRouter', baseUrl: '', keyOptional: false, maskedKeys: {}, savedModels: {}, savedBaseUrls: {}, legacyApi: false };
@@ -2179,56 +2203,162 @@
             applyTheme(!isDarkTheme());
         }
 
-        function applyPanelWidths(sectionWidth) {
-            const mainRect = mainEl.getBoundingClientRect();
-            const resizerWidth = resizer.offsetWidth;
-            const resizerMargin = 16;
-            const available = mainRect.width - 32 - resizerWidth - resizerMargin;
-            const clampedSection = Math.max(
-                MIN_SECTION_WIDTH,
-                Math.min(sectionWidth, available - MIN_ASIDE_WIDTH)
-            );
-            const asideWidth = available - clampedSection;
+        function getResizerSlotWidth(resizerEl) {
+            if (!resizerEl) return 0;
+            const style = window.getComputedStyle(resizerEl);
+            const margin = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
+            return resizerEl.offsetWidth + margin;
+        }
 
+        function getAvailableColumnWidth() {
+            const mainRect = mainEl.getBoundingClientRect();
+            const resizersWidth = getResizerSlotWidth(resizerSessions) + getResizerSlotWidth(resizerEditor);
+            return mainRect.width - MAIN_HORIZONTAL_PADDING - resizersWidth;
+        }
+
+        function readNumericStorage(key) {
+            const raw = localStorage.getItem(key);
+            const value = parseInt(raw, 10);
+            return Number.isNaN(value) ? null : value;
+        }
+
+        function getSavedLayoutWidths() {
+            let sessionsWidth = readNumericStorage(SESSIONS_WIDTH_KEY);
+            let editorWidth = readNumericStorage(EDITOR_WIDTH_KEY);
+
+            if (sessionsWidth === null) sessionsWidth = DEFAULT_SESSIONS_WIDTH;
+            if (editorWidth === null) {
+                const legacy = readNumericStorage(LEGACY_PANEL_WIDTH_KEY);
+                if (legacy !== null) {
+                    editorWidth = legacy - sessionsWidth - getResizerSlotWidth(resizerSessions);
+                }
+            }
+            if (editorWidth === null) editorWidth = DEFAULT_EDITOR_WIDTH;
+
+            return { sessionsWidth, editorWidth };
+        }
+
+        function clamp(value, min, max) {
+            return Math.max(min, Math.min(value, max));
+        }
+
+        function applyThreeColumnLayout(sessionsWidth, editorWidth) {
+            const available = getAvailableColumnWidth();
+            const maxSessions = available - MIN_SECTION_WIDTH - MIN_ASIDE_WIDTH;
+            const safeSessions = clamp(sessionsWidth, MIN_SESSIONS_WIDTH, Math.max(MIN_SESSIONS_WIDTH, maxSessions));
+
+            const maxEditor = available - safeSessions - MIN_ASIDE_WIDTH;
+            const safeEditor = clamp(editorWidth, MIN_SECTION_WIDTH, Math.max(MIN_SECTION_WIDTH, maxEditor));
+
+            let learningWidth = available - safeSessions - safeEditor;
+            let finalSessions = safeSessions;
+            let finalEditor = safeEditor;
+
+            if (learningWidth < MIN_ASIDE_WIDTH) {
+                const deficit = MIN_ASIDE_WIDTH - learningWidth;
+                const editorShrink = Math.min(deficit, finalEditor - MIN_SECTION_WIDTH);
+                finalEditor -= editorShrink;
+                learningWidth = available - finalSessions - finalEditor;
+
+                if (learningWidth < MIN_ASIDE_WIDTH) {
+                    const sessionsShrink = Math.min(
+                        MIN_ASIDE_WIDTH - learningWidth,
+                        finalSessions - MIN_SESSIONS_WIDTH
+                    );
+                    finalSessions -= sessionsShrink;
+                    learningWidth = available - finalSessions - finalEditor;
+                }
+            }
+
+            sessionsAside.style.flex = 'none';
+            sessionsAside.style.width = `${finalSessions}px`;
             editorSection.style.flex = 'none';
+            editorSection.style.width = `${finalEditor}px`;
             learningAside.style.flex = 'none';
-            editorSection.style.width = clampedSection + 'px';
-            learningAside.style.width = asideWidth + 'px';
+            learningAside.style.width = `${Math.max(learningWidth, MIN_ASIDE_WIDTH)}px`;
+
+            return {
+                sessionsWidth: finalSessions,
+                editorWidth: finalEditor,
+                learningWidth: Math.max(learningWidth, MIN_ASIDE_WIDTH),
+            };
         }
 
         function resetPanelFlex() {
+            sessionsAside.style.flex = '';
+            sessionsAside.style.width = '';
             editorSection.style.flex = '';
             editorSection.style.width = '';
             learningAside.style.flex = '';
             learningAside.style.width = '';
         }
 
-        function startResize(event) {
+        function saveLayoutWidths(layout) {
+            localStorage.setItem(SESSIONS_WIDTH_KEY, String(layout.sessionsWidth));
+            localStorage.setItem(EDITOR_WIDTH_KEY, String(layout.editorWidth));
+        }
+
+        function getPointerX(event) {
+            return event.clientX ?? event.touches?.[0]?.clientX ?? 0;
+        }
+
+        function startResize(which, event) {
             if (window.innerWidth <= 768) return;
-            isResizing = true;
+
+            activeResizer = which;
             document.body.classList.add('resizing');
-            editorSection.style.flex = 'none';
-            learningAside.style.flex = 'none';
-            if (!editorSection.style.width) {
-                applyPanelWidths(editorSection.getBoundingClientRect().width);
+            resizerSessions.classList.toggle('active-resizer', which === 'sessions');
+            resizerEditor.classList.toggle('active-resizer', which === 'editor');
+
+            const currentSessions = sessionsAside.getBoundingClientRect().width;
+            const currentEditor = editorSection.getBoundingClientRect().width;
+            applyThreeColumnLayout(currentSessions, currentEditor);
+
+            if (event.pointerId !== undefined && event.target.setPointerCapture) {
+                event.target.setPointerCapture(event.pointerId);
             }
             event.preventDefault();
         }
 
         function doResize(event) {
-            if (!isResizing) return;
+            if (!activeResizer) return;
+
             const mainRect = mainEl.getBoundingClientRect();
-            const sectionWidth = event.clientX - mainRect.left - 16;
-            applyPanelWidths(sectionWidth);
+            const pointerX = getPointerX(event);
+            const mainLeft = mainRect.left + (MAIN_HORIZONTAL_PADDING / 2);
+            const currentSessions = sessionsAside.getBoundingClientRect().width;
+            const currentEditor = editorSection.getBoundingClientRect().width;
+
+            if (activeResizer === 'sessions') {
+                const sessionsWidth = pointerX - mainLeft;
+                applyThreeColumnLayout(sessionsWidth, currentEditor);
+                return;
+            }
+
+            const editorLeft = mainLeft + currentSessions + getResizerSlotWidth(resizerSessions);
+            const editorWidth = pointerX - editorLeft;
+            applyThreeColumnLayout(currentSessions, editorWidth);
         }
 
-        function stopResize() {
-            if (!isResizing) return;
-            isResizing = false;
-            document.body.classList.remove('resizing');
-            if (editorSection.style.width) {
-                localStorage.setItem(PANEL_WIDTH_KEY, editorSection.style.width);
+        function stopResize(event) {
+            if (!activeResizer) return;
+
+            if (event?.pointerId !== undefined && event.target.releasePointerCapture) {
+                try {
+                    event.target.releasePointerCapture(event.pointerId);
+                } catch (_) { /* ignore */ }
             }
+
+            activeResizer = null;
+            document.body.classList.remove('resizing');
+            resizerSessions.classList.remove('active-resizer');
+            resizerEditor.classList.remove('active-resizer');
+
+            const layout = applyThreeColumnLayout(
+                sessionsAside.getBoundingClientRect().width,
+                editorSection.getBoundingClientRect().width
+            );
+            saveLayoutWidths(layout);
         }
 
         function initPanelLayout() {
@@ -2237,36 +2367,32 @@
                 return;
             }
 
-            const savedWidth = localStorage.getItem(PANEL_WIDTH_KEY);
-            if (savedWidth) {
-                const numeric = parseInt(savedWidth, 10);
-                if (!Number.isNaN(numeric)) {
-                    applyPanelWidths(numeric);
-                    return;
-                }
-            }
-            resetPanelFlex();
+            const saved = getSavedLayoutWidths();
+            applyThreeColumnLayout(saved.sessionsWidth, saved.editorWidth);
+        }
+
+        function bindResizer(resizerEl, which) {
+            if (!resizerEl) return;
+            resizerEl.addEventListener('pointerdown', (event) => startResize(which, event));
+            resizerEl.addEventListener('pointerup', stopResize);
+            resizerEl.addEventListener('pointercancel', stopResize);
         }
 
         applyTheme(localStorage.getItem(THEME_KEY) === 'dark');
         initPanelLayout();
 
         themeBtn.addEventListener('click', toggleTheme);
-        resizer.addEventListener('mousedown', startResize);
-        document.addEventListener('mousemove', doResize);
-        document.addEventListener('mouseup', stopResize);
+        bindResizer(resizerSessions, 'sessions');
+        bindResizer(resizerEditor, 'editor');
+        document.addEventListener('pointermove', doResize);
+        document.addEventListener('pointerup', stopResize);
         window.addEventListener('resize', function () {
             if (window.innerWidth <= 768) {
                 resetPanelFlex();
                 return;
             }
-            const savedWidth = localStorage.getItem(PANEL_WIDTH_KEY);
-            if (savedWidth) {
-                const numeric = parseInt(savedWidth, 10);
-                if (!Number.isNaN(numeric)) {
-                    applyPanelWidths(numeric);
-                }
-            }
+            const saved = getSavedLayoutWidths();
+            applyThreeColumnLayout(saved.sessionsWidth, saved.editorWidth);
         });
 
         loadConfigStatus();
