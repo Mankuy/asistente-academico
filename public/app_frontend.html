@@ -657,6 +657,44 @@
         .chapter-item.active {
             border-color: var(--accent);
         }
+        .chapter-item-full {
+            font-weight: 600;
+            background: rgba(13, 110, 253, 0.08);
+            border: 1px solid rgba(13, 110, 253, 0.2);
+            margin-bottom: 0.15rem;
+        }
+        .dark-theme .chapter-item-full {
+            background: rgba(0, 210, 255, 0.1);
+            border-color: rgba(0, 210, 255, 0.25);
+        }
+        .chapter-item-full.active {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 0.12rem var(--accent-ring);
+        }
+        .full-session-content {
+            max-height: 520px;
+        }
+        .full-session-block {
+            margin-bottom: 1rem;
+            padding-bottom: 0.85rem;
+            border-bottom: 1px dashed var(--border);
+        }
+        .full-session-block:last-child {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+        .full-session-block h4 {
+            font-size: 0.82rem;
+            margin: 0 0 0.45rem;
+            color: var(--muted);
+        }
+        .full-session-block .block-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.85rem;
+            line-height: 1.55;
+        }
         .chapter-saved-banner {
             background: rgba(25, 135, 84, 0.12);
             color: var(--status-ok);
@@ -1385,6 +1423,107 @@
                 </div>`;
         }
 
+        const FULL_SESSION_VIEW_ID = '__full__';
+
+        function stripReferencesSection(text) {
+            const marker = '### Referencias Bibliográficas';
+            const idx = String(text || '').indexOf(marker);
+            if (idx === -1) return String(text || '').trim();
+            return String(text).slice(0, idx).trim();
+        }
+
+        function extractReferencesSection(text) {
+            const marker = '### Referencias Bibliográficas';
+            const idx = String(text || '').indexOf(marker);
+            if (idx === -1) return '';
+            return String(text).slice(idx).trim();
+        }
+
+        function getSortedChapters(chapters) {
+            return [...(chapters || [])].sort((a, b) => a.index - b.index);
+        }
+
+        function buildCombinedOptimizedText(chapters) {
+            const sorted = getSortedChapters(chapters);
+            if (!sorted.length) return '';
+
+            const bodies = sorted.map((chapter) => stripReferencesSection(chapter.optimizedText));
+            const references = sorted
+                .map((chapter) => extractReferencesSection(chapter.optimizedText))
+                .filter(Boolean)
+                .pop() || '';
+
+            const parts = sorted.map((chapter, index) => {
+                const header = `Capítulo ${chapter.index}: ${chapter.title}`;
+                return `${header}\n\n${bodies[index]}`;
+            });
+
+            let combined = parts.join('\n\n---\n\n');
+            if (references) {
+                combined += `\n\n---\n\n${references}`;
+            }
+            return combined;
+        }
+
+        function bindCopyButton(button, text) {
+            if (!button) return;
+            button.addEventListener('click', async () => {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    button.textContent = '✓ Copiado';
+                    button.classList.add('copied');
+                    setTimeout(() => {
+                        button.textContent = 'Copiar al portapapeles';
+                        button.classList.remove('copied');
+                    }, 2000);
+                } catch (err) {
+                    button.textContent = 'Error al copiar';
+                }
+            });
+        }
+
+        function showFullSessionOptimized(chapters, bannerHtml = '') {
+            const sorted = getSortedChapters(chapters);
+            if (!sorted.length) {
+                learningPanel.innerHTML = '<p>Esta sesión aún no tiene capítulos corregidos.</p>';
+                return;
+            }
+
+            const combinedText = buildCombinedOptimizedText(sorted);
+            const blocksHtml = sorted.map((chapter) => `
+                <article class="full-session-block">
+                    <h4>Capítulo ${chapter.index}: ${escapeHtml(chapter.title)}</h4>
+                    <div class="block-text">${escapeHtml(stripReferencesSection(chapter.optimizedText))}</div>
+                </article>
+            `).join('');
+
+            const references = sorted
+                .map((chapter) => extractReferencesSection(chapter.optimizedText))
+                .filter(Boolean)
+                .pop();
+
+            learningPanel.innerHTML = `
+                ${bannerHtml}
+                <div class="analysis-result">
+                    <section class="analysis-section optimized-section full-session-section">
+                        <h3>📄 Texto completo de la sesión (${sorted.length} capítulo${sorted.length === 1 ? '' : 's'})</h3>
+                        <p style="font-size:0.8rem;color:var(--muted);margin:0 0 0.6rem;">
+                            Todos los fragmentos optimizados, en orden. Un clic en un capítulo individual muestra su auditoría.
+                        </p>
+                        <div class="analysis-toolbar">
+                            <button type="button" class="btn-copy" id="copy-full-session-btn">Copiar texto completo</button>
+                        </div>
+                        <div class="analysis-content full-session-content" id="full-session-content">
+                            ${blocksHtml}
+                            ${references ? `<article class="full-session-block"><h4>Referencias bibliográficas</h4><div class="block-text">${escapeHtml(references.replace(/^### Referencias Bibliográficas\s*/i, ''))}</div></article>` : ''}
+                        </div>
+                    </section>
+                </div>
+            `;
+
+            bindCopyButton(document.getElementById('copy-full-session-btn'), combinedText);
+        }
+
         function showDualAnalysis(audit, optimizedText, bannerHtml = '') {
             learningPanel.innerHTML = `
                 ${bannerHtml}
@@ -1403,22 +1542,7 @@
                 </div>
             `;
 
-            const copyBtn = document.getElementById('copy-optimized-btn');
-            if (copyBtn) {
-                copyBtn.addEventListener('click', async () => {
-                    try {
-                        await navigator.clipboard.writeText(optimizedText);
-                        copyBtn.textContent = '✓ Copiado';
-                        copyBtn.classList.add('copied');
-                        setTimeout(() => {
-                            copyBtn.textContent = 'Copiar al portapapeles';
-                            copyBtn.classList.remove('copied');
-                        }, 2000);
-                    } catch (err) {
-                        copyBtn.textContent = 'Error al copiar';
-                    }
-                });
-            }
+            bindCopyButton(document.getElementById('copy-optimized-btn'), optimizedText);
         }
 
         function escapeHtml(text) {
@@ -1607,15 +1731,23 @@
             }
 
             chaptersPanelEl.classList.remove('hidden');
-            chaptersListEl.innerHTML = chapters.map((chapter) => `
+            chaptersListEl.innerHTML = `
+                <div class="chapter-item chapter-item-full ${activeChapterId === FULL_SESSION_VIEW_ID ? 'active' : ''}" data-chapter-id="${FULL_SESSION_VIEW_ID}">
+                    📄 Texto completo (${chapters.length})
+                </div>
+                ${chapters.map((chapter) => `
                 <div class="chapter-item ${chapter.id === activeChapterId ? 'active' : ''}" data-chapter-id="${escapeAttr(chapter.id)}">
                     ${chapter.index}. ${escapeHtml(chapter.title)}
-                </div>
-            `).join('');
+                </div>`).join('')}
+            `;
 
             chaptersListEl.querySelectorAll('.chapter-item').forEach((item) => {
                 item.addEventListener('click', () => {
-                    viewChapter(item.dataset.chapterId);
+                    if (item.dataset.chapterId === FULL_SESSION_VIEW_ID) {
+                        viewFullSessionText();
+                    } else {
+                        viewChapter(item.dataset.chapterId);
+                    }
                 });
             });
         }
@@ -1627,9 +1759,14 @@
             await loadSessionDetails(sessionId);
             await refreshSessionsList(sessionId);
             editor.value = '';
-            learningPanel.innerHTML = activeSessionData
-                ? `<p>Sesión <strong>${escapeHtml(activeSessionData.name)}</strong> activa. Agregá un nuevo fragmento en el editor para el siguiente capítulo.</p>`
-                : '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+            if (activeSessionData?.chapters?.length) {
+                activeChapterId = FULL_SESSION_VIEW_ID;
+                showFullSessionOptimized(activeSessionData.chapters);
+            } else {
+                learningPanel.innerHTML = activeSessionData
+                    ? `<p>Sesión <strong>${escapeHtml(activeSessionData.name)}</strong> activa. Agregá un nuevo fragmento en el editor para el siguiente capítulo.</p>`
+                    : '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+            }
             setTimeout(() => { skipAutoAnalyze = false; }, 0);
         }
 
@@ -1767,6 +1904,15 @@
             return data.chapter;
         }
 
+        function viewFullSessionText() {
+            if (!activeSessionData?.chapters?.length) return;
+            activeChapterId = FULL_SESSION_VIEW_ID;
+            renderChaptersList(activeSessionData.chapters);
+            skipAutoAnalyze = true;
+            showFullSessionOptimized(activeSessionData.chapters);
+            setTimeout(() => { skipAutoAnalyze = false; }, 0);
+        }
+
         function viewChapter(chapterId) {
             if (!activeSessionData?.chapters) return;
             const chapter = activeSessionData.chapters.find((item) => item.id === chapterId);
@@ -1858,13 +2004,14 @@
                     ? showChapterSavedBanner(savedChapter.title, savedChapter.index)
                     : '';
 
-                showDualAnalysis(audit, optimizedText, banner);
-
-                if (savedChapter) {
+                if (savedChapter && activeSessionData?.chapters?.length) {
                     skipAutoAnalyze = true;
                     editor.value = '';
-                    activeChapterId = savedChapter.id;
+                    activeChapterId = FULL_SESSION_VIEW_ID;
+                    showFullSessionOptimized(activeSessionData.chapters, banner);
                     setTimeout(() => { skipAutoAnalyze = false; }, 0);
+                } else {
+                    showDualAnalysis(audit, optimizedText, banner);
                 }
             } catch (error) {
                 console.error('Error al obtener sugerencia:', error);
