@@ -166,11 +166,14 @@ const LLM_PROVIDER_IDS = [
   'custom',
 ];
 
+const DEFAULT_GUARDIAN_MODEL = 'openrouter/free';
+
 const LLM_PROVIDERS = {
   openrouter: {
     label: 'OpenRouter',
     endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     defaultModel: 'openrouter/owl-alpha',
+    defaultFastModel: DEFAULT_GUARDIAN_MODEL,
     docsUrl: 'https://openrouter.ai/keys',
     apiStyle: 'openai',
     keyOptional: false,
@@ -381,11 +384,16 @@ function loadLlmFastModelsStore() {
   return parseJsonEnv('LLM_FAST_MODELS_JSON', {});
 }
 
+function getDefaultFastModelForProvider(providerId = getLlmProviderId()) {
+  const provider = getLlmProvider(providerId);
+  return (provider.defaultFastModel || DEFAULT_GUARDIAN_MODEL).trim();
+}
+
 function getLlmFastModel(providerId = getLlmProviderId()) {
   const fastModels = loadLlmFastModelsStore();
   const fast = (fastModels[providerId] || '').trim();
   if (fast) return fast;
-  return getLlmModel(providerId);
+  return getDefaultFastModelForProvider(providerId);
 }
 
 function getCostConfirmThreshold() {

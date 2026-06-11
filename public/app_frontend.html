@@ -1343,7 +1343,7 @@
         <input id="llm-model" type="text" list="model-suggestions" placeholder="openrouter/owl-alpha" autocomplete="off">
         <datalist id="model-suggestions"></datalist>
         <label for="llm-fast-model">Modelo económico (guardián)</label>
-        <input id="llm-fast-model" type="text" list="fast-model-suggestions" placeholder="gpt-4o-mini" autocomplete="off">
+        <input id="llm-fast-model" type="text" list="fast-model-suggestions" placeholder="openrouter/free" autocomplete="off">
         <datalist id="fast-model-suggestions"></datalist>
         <p class="settings-help">El guardián clasifica intención sospechosa con este modelo barato antes de gastar el modelo principal.</p>
         <label for="cost-threshold">Umbral de confirmación de costo (USD)</label>
@@ -1510,8 +1510,10 @@
             custom: [],
         };
 
+        const DEFAULT_GUARDIAN_MODEL = 'openrouter/free';
+
         const PROVIDER_FAST_MODELS = {
-            openrouter: ['openai/gpt-4o-mini', 'google/gemini-2.0-flash', 'meta-llama/llama-3.1-8b-instruct'],
+            openrouter: ['openrouter/free', 'openai/gpt-4o-mini', 'google/gemini-2.0-flash', 'meta-llama/llama-3.1-8b-instruct'],
             openai: ['gpt-4o-mini', 'gpt-3.5-turbo'],
             anthropic: ['claude-3-5-haiku-20241022'],
             groq: ['llama-3.1-8b-instant'],
@@ -1531,7 +1533,7 @@
         };
 
         const PROVIDER_DEFAULTS = {
-            openrouter: { model: 'openrouter/owl-alpha', docsUrl: 'https://openrouter.ai/keys', keyOptional: false, needsUrl: false },
+            openrouter: { model: 'openrouter/owl-alpha', fastModel: DEFAULT_GUARDIAN_MODEL, docsUrl: 'https://openrouter.ai/keys', keyOptional: false, needsUrl: false },
             openai: { model: 'gpt-4o-mini', docsUrl: 'https://platform.openai.com/api-keys', keyOptional: false, needsUrl: false },
             anthropic: { model: 'claude-3-5-sonnet-20241022', docsUrl: 'https://console.anthropic.com/settings/keys', keyOptional: false, needsUrl: false },
             groq: { model: 'llama-3.3-70b-versatile', docsUrl: 'https://console.groq.com/keys', keyOptional: false, needsUrl: false },
@@ -1588,7 +1590,7 @@
         const MIN_SESSIONS_WIDTH = 180;
         const MIN_SECTION_WIDTH = 280;
         const MIN_ASIDE_WIDTH = 260;
-        let currentConfig = { configured: false, maskedKey: null, model: 'openrouter/owl-alpha', provider: 'openrouter', providerLabel: 'OpenRouter', baseUrl: '', keyOptional: false, maskedKeys: {}, savedModels: {}, savedBaseUrls: {}, legacyApi: false, bunkerMode: false };
+        let currentConfig = { configured: false, maskedKey: null, model: 'openrouter/owl-alpha', fastModel: DEFAULT_GUARDIAN_MODEL, provider: 'openrouter', providerLabel: 'OpenRouter', baseUrl: '', keyOptional: false, maskedKeys: {}, savedModels: {}, savedFastModels: {}, savedBaseUrls: {}, legacyApi: false, bunkerMode: false };
         const DEBOUNCE_MS = 500;
         const CLIENT_RETRY_MAX = 4;
         const ACTIVE_SESSION_KEY = 'academic-active-session';
@@ -1625,8 +1627,9 @@
 
         function getSavedFastModelForProvider(providerId) {
             return currentConfig.savedFastModels?.[providerId]
+                || PROVIDER_DEFAULTS[providerId]?.fastModel
                 || PROVIDER_FAST_MODELS[providerId]?.[0]
-                || getSavedModelForProvider(providerId);
+                || DEFAULT_GUARDIAN_MODEL;
         }
 
         function getGuardianModelForRequest() {
@@ -1843,6 +1846,7 @@
                     if (data.maskedKey && !maskedKeys.openrouter) {
                         maskedKeys.openrouter = data.maskedKey;
                     }
+                    const loadedProviderId = data.provider || 'openrouter';
                     currentConfig = {
                         configured: data.configured,
                         maskedKey: data.maskedKey,
@@ -1853,7 +1857,11 @@
                         providersList: data.providers || [],
                         legacyApi,
                         model: data.model || data.defaultModel || 'openrouter/owl-alpha',
-                        fastModel: data.fastModel || data.model || 'gpt-4o-mini',
+                        fastModel: data.fastModel
+                            || data.savedFastModels?.[loadedProviderId]
+                            || PROVIDER_DEFAULTS[loadedProviderId]?.fastModel
+                            || PROVIDER_FAST_MODELS[loadedProviderId]?.[0]
+                            || DEFAULT_GUARDIAN_MODEL,
                         costConfirmThresholdUsd: data.costConfirmThresholdUsd ?? 0.1,
                         provider: data.provider || 'openrouter',
                         providerLabel: data.providerLabel || 'OpenRouter',

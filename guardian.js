@@ -55,6 +55,7 @@ const MODEL_PRICE_PER_1M = {
   'claude-3-5-sonnet-20241022': { input: 3.0, output: 15.0 },
   'claude-3-5-haiku-20241022': { input: 0.8, output: 4.0 },
   'openrouter/owl-alpha': { input: 0.5, output: 1.5 },
+  'openrouter/free': { input: 0, output: 0 },
   'google/gemini-2.0-flash': { input: 0.1, output: 0.4 },
   'gemini-2.0-flash': { input: 0.1, output: 0.4 },
   'llama-3.3-70b-versatile': { input: 0.59, output: 0.79 },
