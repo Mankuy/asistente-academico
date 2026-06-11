@@ -682,15 +682,21 @@ async function callLlmOnce(systemPrompt, userText, opts = {}) {
     );
   }
 
+  const rawText = await response.text();
   let data;
   try {
-    data = await response.json();
+    data = JSON.parse(rawText);
   } catch (parseErr) {
-    const retryable = isRetryableHttpStatus(response.status);
+    const bodySnippet = rawText.substring(0, 100);
+    const isFake200 = response.status === 200;
+    const retryable = isFake200 || isRetryableHttpStatus(response.status);
+    const details = isFake200
+      ? `Provider returned invalid JSON despite HTTP 200. Body snippet: ${bodySnippet}`
+      : `HTTP ${response.status}: respuesta no JSON. Body snippet: ${bodySnippet}`;
     throw new ApiError(
       `${provider.label} devolvió una respuesta no válida`,
       502,
-      `HTTP ${response.status}: respuesta no JSON`,
+      details,
       { retryable }
     );
   }
