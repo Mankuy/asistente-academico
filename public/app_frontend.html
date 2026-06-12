@@ -523,6 +523,35 @@
             font-size: 0.9rem;
             margin: 0.75rem 0;
         }
+        .thesis-preflight-pdf-note {
+            font-size: 0.85rem;
+            color: var(--muted, #666);
+            margin: 0.35rem 0 0.65rem;
+        }
+        .thesis-preflight-pdf-note.hidden {
+            display: none;
+        }
+        .revision-indicios-block {
+            margin: 0.75rem 0;
+            padding: 0.65rem 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 0.45rem;
+            background: var(--badge-bg);
+            font-size: 0.88rem;
+        }
+        .revision-indicios-list {
+            margin: 0.4rem 0 0.5rem 1.1rem;
+            padding: 0;
+        }
+        .revision-indicios-disclaimer {
+            margin: 0.5rem 0 0;
+            font-size: 0.82rem;
+            color: var(--muted, #666);
+        }
+        .indicio-tag {
+            font-size: 0.78rem;
+            opacity: 0.85;
+        }
         .thesis-preflight-actions {
             display: flex;
             gap: 0.5rem;
@@ -1530,6 +1559,13 @@
                 </select>
             </div>
             <div class="context-field">
+                <label for="doc-type-select">Tipo de documento</label>
+                <select id="doc-type-select">
+                    <option value="trabajo" selected>Trabajo propio (corrección)</option>
+                    <option value="revision">Dictamen de pares recibido (devolución)</option>
+                </select>
+            </div>
+            <div class="context-field">
                 <label for="nivel-select">Nivel Académico</label>
                 <select id="nivel-select">
                     <option value="Trabajo de Grado" selected>Trabajo de Grado</option>
@@ -1589,6 +1625,7 @@
     <div class="settings-modal thesis-preflight-modal" role="dialog" aria-labelledby="thesis-preflight-title">
         <h2 id="thesis-preflight-title">📋 Plan de procesamiento</h2>
         <p id="thesis-preflight-summary"></p>
+        <p id="thesis-preflight-pdf-note" class="thesis-preflight-pdf-note hidden" role="note"></p>
         <div id="thesis-preflight-preserved"></div>
         <details id="thesis-preflight-auditable-wrap" class="thesis-preflight-auditable-wrap">
             <summary id="thesis-preflight-auditable-summary"></summary>
@@ -1709,6 +1746,7 @@
         let thesisResumeState = null;
         let thesisAbortController = null;
         const normaSelect = document.getElementById('norma-select');
+        const docTypeSelect = document.getElementById('doc-type-select');
         const nivelSelect = document.getElementById('nivel-select');
         const themeBtn = document.getElementById('theme-btn');
         const mainEl = document.querySelector('main');
@@ -2689,7 +2727,9 @@
             showToast('El fragmento citado no se encontró textualmente en tu texto.', true);
         }
 
-        function buildSuggestionCardHtml(item, state) {
+        function buildSuggestionCardHtml(item, state, revisionMode = false) {
+            const acceptLabel = revisionMode ? '✓ Responder' : '✓ Aceptar';
+            const rejectLabel = revisionMode ? '✕ Omitir' : '✕ Rechazar';
             if (item.quote_verified === false) {
                 return `
                 <article class="suggestion-card unverified" data-suggestion-id="${escapeAttr(item.id)}">
@@ -2709,8 +2749,8 @@
                     <div class="suggestion-card-head">
                         <span class="severity-badge ${escapeAttr(item.severity)}">${escapeHtml(item.severity)}</span>
                         <div class="suggestion-actions">
-                            <button type="button" class="btn-suggestion btn-accept ${accepted ? 'active-accept' : ''}" data-action="accept" data-id="${escapeAttr(item.id)}">✓ Aceptar</button>
-                            <button type="button" class="btn-suggestion btn-reject ${!accepted ? 'active-reject' : ''}" data-action="reject" data-id="${escapeAttr(item.id)}">✕ Rechazar</button>
+                            <button type="button" class="btn-suggestion btn-accept ${accepted ? 'active-accept' : ''}" data-action="accept" data-id="${escapeAttr(item.id)}">${acceptLabel}</button>
+                            <button type="button" class="btn-suggestion btn-reject ${!accepted ? 'active-reject' : ''}" data-action="reject" data-id="${escapeAttr(item.id)}">${rejectLabel}</button>
                         </div>
                     </div>
                     <blockquote class="suggestion-quote suggestion-quote-clickable" data-quote-jump="${escapeAttr(item.quote)}" title="📍 Ver en tu texto">"${escapeHtml(item.quote)}"</blockquote>
@@ -2750,15 +2790,38 @@
             });
         }
 
-        function showAuditReview(auditJson, auditProse, auditMode, modelUsed = null) {
+        function buildRevisionIndiciosHtml(indiciosIa) {
+            const signals = indiciosIa?.señales || indiciosIa?.senales || [];
+            if (!signals.length) return '';
+            const items = signals.map((item) => {
+                const tag = item.verificado_por_codigo ? '✓ verificado por código' : 'lectura LLM';
+                return `<li><span class="indicio-tag">${escapeHtml(tag)}</span> ${escapeHtml(item.detalle || '')}</li>`;
+            }).join('');
+            const nivel = indiciosIa?.nivel ? ` (nivel: ${escapeHtml(indiciosIa.nivel)})` : '';
+            return `
+                <div class="revision-indicios-block">
+                    <p class="revision-indicios-title"><strong>Indicios contextuales${nivel}</strong></p>
+                    <ul class="revision-indicios-list">${items}</ul>
+                    <p class="revision-indicios-disclaimer">⚠️ No existe detección de IA concluyente. Estos son indicios para contextualizar tu devolución — no constituyen prueba ni acusación.</p>
+                </div>`;
+        }
+
+        function showAuditReview(auditJson, auditProse, auditMode, modelUsed = null, docType = 'trabajo') {
             const modelBadge = buildModelTraceBadgeHtml(modelUsed);
+            const revisionMode = isRevisionDocType(docType) || auditJson?.docType === 'revision';
+            const rewriteBtnLabel = revisionMode
+                ? '✉️ Generar carta de respuesta (Fase 2)'
+                : '✨ Optimizar con sugerencias aceptadas';
+
             if (!auditJson || auditMode !== 'json') {
+                const proseTitle = revisionMode ? '🔍 Análisis del dictamen (modo prosa)' : '🔍 Auditoría (modo prosa)';
+                const proseBtn = revisionMode ? '✉️ Generar carta de respuesta (Fase 2)' : '✨ Optimizar texto (Fase 2)';
                 learningPanel.innerHTML = `
                     ${modelBadge}
                     <section class="analysis-section audit-section">
-                        <h3>🔍 Auditoría (modo prosa)</h3>
+                        <h3>${proseTitle}</h3>
                         <div class="analysis-content">${escapeHtml(auditProse)}</div>
-                        <button type="button" class="btn btn-primary btn-optimize" id="run-rewrite-btn">✨ Optimizar texto (Fase 2)</button>
+                        <button type="button" class="btn btn-primary btn-optimize" id="run-rewrite-btn">${proseBtn}</button>
                     </section>`;
                 document.getElementById('run-rewrite-btn')?.addEventListener('click', runRewriteFromReview);
                 return;
@@ -2769,53 +2832,82 @@
                 suggestionDecisions[item.id] = item.quote_verified === false ? 'rejected' : 'accepted';
             });
 
-            const cardsHtml = auditJson.sugerencias.map((item) => buildSuggestionCardHtml(item, 'accepted')).join('');
+            const cardsHtml = auditJson.sugerencias.map((item) => buildSuggestionCardHtml(item, 'accepted', revisionMode)).join('');
             const checklistHtml = (auditJson.checklist || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
             const biblioHtml = (auditJson.biblio_check || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+            const indiciosHtml = revisionMode ? buildRevisionIndiciosHtml(auditJson.indicios_ia) : '';
+            const auditTitle = revisionMode ? '🔍 Análisis del dictamen' : '🔍 Auditoría estructurada';
+            const resumenText = revisionMode
+                ? (auditJson.resumen_dictamen || auditJson.resumen || '')
+                : auditJson.resumen;
+            const recomendacionHtml = revisionMode && auditJson.recomendacion_general
+                ? `<p class="suggestion-field"><strong>Recomendación:</strong> ${escapeHtml(auditJson.recomendacion_general)}</p>`
+                : '';
+            const veredictoHtml = revisionMode
+                ? ''
+                : `<span class="veredicto-badge ${escapeAttr(auditJson.veredicto)}">${escapeHtml(verdictLabel(auditJson.veredicto))}</span>`;
+            const cardsIntro = revisionMode
+                ? '<p class="suggestion-field"><strong>Puntos del revisor</strong> — aceptá los que quieras incluir en la carta:</p>'
+                : '';
 
             learningPanel.innerHTML = `
                 ${modelBadge}
                 <section class="analysis-section audit-section">
-                    <h3>🔍 Auditoría estructurada</h3>
+                    <h3>${auditTitle}</h3>
                     <div class="audit-summary">
-                        ${escapeHtml(auditJson.resumen)}
-                        <span class="veredicto-badge ${escapeAttr(auditJson.veredicto)}">${escapeHtml(verdictLabel(auditJson.veredicto))}</span>
+                        ${escapeHtml(resumenText)}
+                        ${veredictoHtml}
                     </div>
-                    <div class="suggestion-cards" id="suggestion-cards">${cardsHtml || '<p>Sin sugerencias accionables.</p>'}</div>
+                    ${recomendacionHtml}
+                    ${indiciosHtml}
+                    ${cardsIntro}
+                    <div class="suggestion-cards" id="suggestion-cards">${cardsHtml || '<p>Sin puntos accionables.</p>'}</div>
                     ${checklistHtml ? `<ul class="audit-checklist">${checklistHtml}</ul>` : ''}
                     ${biblioHtml ? `<p class="suggestion-field"><strong>Biblio:</strong></p><ul class="audit-checklist">${biblioHtml}</ul>` : ''}
-                    <button type="button" class="btn btn-primary btn-optimize" id="run-rewrite-btn">✨ Optimizar con sugerencias aceptadas</button>
+                    <button type="button" class="btn btn-primary btn-optimize" id="run-rewrite-btn">${rewriteBtnLabel}</button>
                 </section>`;
 
             bindSuggestionCardEvents();
             document.getElementById('run-rewrite-btn')?.addEventListener('click', runRewriteFromReview);
         }
 
-        function showPedagogicalAnalysis(auditJson, auditProse, auditMode, optimizedText, bannerHtml = '', integrity = null, modelUsed = null) {
+        function showPedagogicalAnalysis(auditJson, auditProse, auditMode, optimizedText, bannerHtml = '', integrity = null, modelUsed = null, docType = 'trabajo') {
             const cleanOptimized = sanitizeZeroWidthClient(optimizedText);
             const integrityHtml = buildIntegrityBannerHtml(integrity);
             const modelBadge = buildModelTraceBadgeHtml(modelUsed);
+            const revisionMode = isRevisionDocType(docType) || auditJson?.docType === 'revision';
             const auditSection = auditJson && auditMode === 'json'
                 ? (() => {
                     const cardsHtml = auditJson.sugerencias.map((item) => {
                         const state = suggestionDecisions[item.id] || 'accepted';
-                        return buildSuggestionCardHtml(item, state);
+                        return buildSuggestionCardHtml(item, state, revisionMode);
                     }).join('');
+                    const resumenText = revisionMode
+                        ? (auditJson.resumen_dictamen || auditJson.resumen || '')
+                        : auditJson.resumen;
+                    const auditTitle = revisionMode ? '🔍 Análisis del dictamen' : '🔍 Auditoría estructurada';
+                    const veredictoHtml = revisionMode
+                        ? ''
+                        : `<span class="veredicto-badge ${escapeAttr(auditJson.veredicto)}">${escapeHtml(verdictLabel(auditJson.veredicto))}</span>`;
+                    const indiciosHtml = revisionMode ? buildRevisionIndiciosHtml(auditJson.indicios_ia) : '';
                     return `
                     <section class="analysis-section audit-section">
-                        <h3>🔍 Auditoría estructurada</h3>
+                        <h3>${auditTitle}</h3>
                         <div class="audit-summary">
-                            ${escapeHtml(auditJson.resumen)}
-                            <span class="veredicto-badge ${escapeAttr(auditJson.veredicto)}">${escapeHtml(verdictLabel(auditJson.veredicto))}</span>
+                            ${escapeHtml(resumenText)}
+                            ${veredictoHtml}
                         </div>
+                        ${indiciosHtml}
                         <div class="suggestion-cards">${cardsHtml}</div>
                     </section>`;
                 })()
                 : `
                     <section class="analysis-section audit-section">
-                        <h3>🔍 Auditoría y Sugerencias</h3>
+                        <h3>${revisionMode ? '🔍 Análisis del dictamen' : '🔍 Auditoría y Sugerencias'}</h3>
                         <div class="analysis-content">${escapeHtml(auditProse)}</div>
                     </section>`;
+
+            const outputTitle = revisionMode ? '✉️ Carta de respuesta (borrador)' : '✨ Texto Final Optimizado';
 
             learningPanel.innerHTML = `
                 ${bannerHtml}
@@ -2824,7 +2916,7 @@
                     ${auditSection}
                     <section class="analysis-section optimized-section">
                         ${integrityHtml}
-                        <h3>✨ Texto Final Optimizado</h3>
+                        <h3>${outputTitle}</h3>
                         <div class="analysis-toolbar">
                             <button type="button" class="btn-copy" id="copy-optimized-btn">Copiar al portapapeles</button>
                         </div>
@@ -2837,8 +2929,8 @@
             if (auditJson && auditMode === 'json') bindSuggestionCardEvents();
         }
 
-        function showDualAnalysis(audit, optimizedText, bannerHtml = '', auditJson = null, auditMode = 'prose', integrity = null, modelUsed = null) {
-            showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, bannerHtml, integrity, modelUsed);
+        function showDualAnalysis(audit, optimizedText, bannerHtml = '', auditJson = null, auditMode = 'prose', integrity = null, modelUsed = null, docType = 'trabajo') {
+            showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, bannerHtml, integrity, modelUsed, docType);
         }
 
         async function runRewriteFromReview() {
@@ -2852,6 +2944,7 @@
                     text: ctx.text,
                     norma: ctx.norma,
                     nivel: ctx.nivel,
+                    docType: ctx.docType || getDocType(),
                     stage: 'rewrite',
                     audit: ctx.audit,
                 };
@@ -2884,7 +2977,8 @@
                     rewriteCtx.auditMode,
                     optimizedText,
                     rewriteResult.data.integrity,
-                    rewriteResult.data.modelUsed
+                    rewriteResult.data.modelUsed,
+                    rewriteCtx.docType || getDocType()
                 );
             } catch (error) {
                 showError(error.message || 'No se pudo completar la optimización.', { retryable: true });
@@ -2893,7 +2987,7 @@
             }
         }
 
-        async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText, integrity = null, modelUsed = null) {
+        async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText, integrity = null, modelUsed = null, docType = 'trabajo') {
             clearRetryCountdown();
             lastAnalysisContext = null;
 
@@ -2911,7 +3005,7 @@
                 showFullSessionOptimized(activeSessionData.chapters, banner);
                 setTimeout(() => { skipAutoAnalyze = false; }, 0);
             } else {
-                showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, banner, integrity, modelUsed);
+                showPedagogicalAnalysis(auditJson, audit, auditMode, optimizedText, banner, integrity, modelUsed, docType);
             }
         }
 
@@ -2928,6 +3022,7 @@
         async function postSuggestStage(payload, fetchOptions = {}) {
             const requestPayload = {
                 ...payload,
+                docType: payload.docType || getDocType(),
                 guardianModel: payload.guardianModel || getGuardianModelForRequest(),
             };
             const response = await fetch('/api/suggest', {
@@ -3613,6 +3708,7 @@
                 text,
                 norma: normaSelect.value,
                 nivel: nivelSelect.value,
+                docType: getDocType(),
                 sessionId,
                 costConfirmed: Boolean(options.costConfirmed),
             };
@@ -3627,12 +3723,16 @@
                     }
                 }
 
-                showLoading('Fase 1: Auditando normativa y estructura…', true);
+                const revisionMode = isRevisionDocType(getDocType());
+                showLoading(revisionMode
+                    ? 'Fase 1: Analizando dictamen de revisión…'
+                    : 'Fase 1: Auditando normativa y estructura…', true);
 
                 const auditPayload = {
                     text,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
+                    docType: getDocType(),
                     stage: 'audit',
                 };
                 if (sessionId) auditPayload.sessionId = sessionId;
@@ -3668,13 +3768,14 @@
                     auditMode,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
+                    docType: auditData.docType || getDocType(),
                     sessionId,
                     costConfirmed: Boolean(options.costConfirmed),
                 };
                 lastAnalysisContext = { ...pendingRewriteContext };
 
                 analysisInFlight = false;
-                showAuditReview(auditJson, audit, auditMode, auditData.modelUsed);
+                showAuditReview(auditJson, audit, auditMode, auditData.modelUsed, pendingRewriteContext.docType);
                 return;
             } catch (error) {
                 console.error('Error al obtener sugerencia:', error);
@@ -3828,15 +3929,16 @@
 
             const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
-            const parts = [];
+            const pages = [];
 
             for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
                 const page = await pdf.getPage(pageNum);
                 const content = await page.getTextContent();
-                parts.push(reconstructPdfPageText(content.items));
+                pages.push(reconstructPdfPageText(content.items));
             }
 
-            return parts.join('\n\n').replace(/ {3,}/g, ' ').trim();
+            const text = pages.join('\n\n').replace(/ {3,}/g, ' ').trim();
+            return { text, pages };
         }
 
         async function extractDocxText(arrayBuffer) {
@@ -3845,7 +3947,20 @@
             }
 
             const result = await mammoth.extractRawText({ arrayBuffer });
-            return (result.value || '').trim();
+            const text = (result.value || '').trim();
+            return { text, pages: null };
+        }
+
+        function extractPlainDocumentText(text) {
+            return { text: String(text || '').trim(), pages: null };
+        }
+
+        function getDocType() {
+            return docTypeSelect?.value === 'revision' ? 'revision' : 'trabajo';
+        }
+
+        function isRevisionDocType(docType) {
+            return docType === 'revision';
         }
 
         function getFileExtension(fileName) {
@@ -4010,6 +4125,7 @@
 
         const thesisPreflightOverlay = document.getElementById('thesis-preflight-overlay');
         const thesisPreflightSummary = document.getElementById('thesis-preflight-summary');
+        const thesisPreflightPdfNote = document.getElementById('thesis-preflight-pdf-note');
         const thesisPreflightPreserved = document.getElementById('thesis-preflight-preserved');
         const thesisPreflightAuditableSummary = document.getElementById('thesis-preflight-auditable-summary');
         const thesisPreflightAuditable = document.getElementById('thesis-preflight-auditable');
@@ -4118,7 +4234,7 @@
             });
         }
 
-        function showThesisPreflightModal(chunks, sessionId) {
+        function showThesisPreflightModal(chunks, sessionId, hasPdfPages = false) {
             return new Promise((resolve) => {
                 const workingChunks = chunks.map((chunk) => ({ ...chunk }));
                 const rerender = () => {
@@ -4127,6 +4243,15 @@
                 };
 
                 thesisPreflightSummary.textContent = `${workingChunks.length} fragmentos detectados`;
+                if (thesisPreflightPdfNote) {
+                    if (hasPdfPages) {
+                        thesisPreflightPdfNote.textContent = '';
+                        thesisPreflightPdfNote.classList.add('hidden');
+                    } else {
+                        thesisPreflightPdfNote.textContent = 'Detección automática de carátula/índice disponible solo para PDF.';
+                        thesisPreflightPdfNote.classList.remove('hidden');
+                    }
+                }
                 rerender();
                 thesisPreflightCost.textContent = 'Calculando costo estimado…';
                 recalculateThesisPreflightCost(workingChunks, sessionId).then((costs) => {
@@ -4408,22 +4533,32 @@
 
             try {
                 showLoading('Extrayendo tesis completa…', true);
-                let extractedText = '';
+                let extraction;
                 if (extension === '.pdf') {
-                    extractedText = await extractPdfText(await readFileAsArrayBuffer(file));
+                    extraction = await extractPdfText(await readFileAsArrayBuffer(file));
                 } else {
-                    extractedText = await extractDocxText(await readFileAsArrayBuffer(file));
+                    extraction = await extractDocxText(await readFileAsArrayBuffer(file));
                 }
 
-                const rawChunks = chunkThesisText(extractedText);
-                if (!rawChunks.length) {
+                const hasPdfPages = Array.isArray(extraction.pages) && extraction.pages.length > 0;
+                let chunks;
+                if (hasPdfPages && window.thesisClassify?.buildThesisChunksFromPages) {
+                    chunks = window.thesisClassify.buildThesisChunksFromPages(extraction.pages, chunkThesisText);
+                } else {
+                    const rawChunks = chunkThesisText(extraction.text);
+                    if (!rawChunks.length) {
+                        showError('No se pudo trocear la tesis en capítulos.');
+                        return;
+                    }
+                    chunks = window.thesisClassify
+                        ? window.thesisClassify.annotateThesisChunks(rawChunks)
+                        : rawChunks;
+                }
+
+                if (!chunks.length) {
                     showError('No se pudo trocear la tesis en capítulos.');
                     return;
                 }
-
-                const chunks = window.thesisClassify
-                    ? window.thesisClassify.annotateThesisChunks(rawChunks)
-                    : rawChunks;
 
                 const session = await createNewSession(file.name.replace(/\.[^.]+$/, ''));
                 if (!session) return;
@@ -4432,7 +4567,7 @@
                 activeSessionData = session;
 
                 showLoading('Clasificando fragmentos de front matter…', true);
-                const confirmedChunks = await showThesisPreflightModal(chunks, session.id);
+                const confirmedChunks = await showThesisPreflightModal(chunks, session.id, hasPdfPages);
                 if (!confirmedChunks) {
                     await apiJson(`/api/sessions/${session.id}`, { method: 'DELETE' });
                     if (activeSessionId === session.id) {
@@ -4532,13 +4667,13 @@
                 let extractedText = '';
 
                 if (extension === '.txt' || extension === '.md') {
-                    extractedText = (await readFileAsText(file)).trim();
+                    extractedText = extractPlainDocumentText(await readFileAsText(file)).text;
                 } else if (extension === '.pdf') {
                     const arrayBuffer = await readFileAsArrayBuffer(file);
-                    extractedText = await extractPdfText(arrayBuffer);
+                    extractedText = (await extractPdfText(arrayBuffer)).text;
                 } else if (extension === '.docx') {
                     const arrayBuffer = await readFileAsArrayBuffer(file);
-                    extractedText = await extractDocxText(arrayBuffer);
+                    extractedText = (await extractDocxText(arrayBuffer)).text;
                 }
 
                 if (!extractedText) {

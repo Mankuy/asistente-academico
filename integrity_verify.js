@@ -198,6 +198,7 @@ function verifyRewriteIntegrity(originalText, optimizedText, options = {}) {
 
 module.exports = {
   sanitizeOptimizedText,
+  stripHomoglyphs,
   extractCitations,
   extractSignificantData,
   verifyRewriteIntegrity,

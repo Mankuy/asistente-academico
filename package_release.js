@@ -8,6 +8,7 @@ const ZIP_PATH = path.join(ROOT, 'Asistente_Academico_V1.zip');
 
 const FILES_TO_COPY = [
   'backend_academico.js',
+  'revision_audit.js',
   'sessions_store.js',
   'guardian.js',
   'audit_json.js',
@@ -17,6 +18,7 @@ const FILES_TO_COPY = [
   'integrity_verify.js',
   'bunker.js',
   'test_composer_v6.js',
+  'test_composer_v7.js',
   'iniciar_asistente.bat',
   'Dockerfile',
   'docker-compose.yml',
@@ -147,8 +149,12 @@ function createRelease() {
   if (!fs.existsSync(publicSrc)) {
     throw new Error('Carpeta public/ no encontrada');
   }
-  copyDir(publicSrc, path.join(DIST_DIR, 'public'), (name) => name.endsWith('.html'));
-  console.log('  + public/ (archivos .html)');
+  copyDir(
+    publicSrc,
+    path.join(DIST_DIR, 'public'),
+    (name) => name.endsWith('.html') || name === 'thesis_classify.js'
+  );
+  console.log('  + public/ (.html + thesis_classify.js)');
 
   fs.writeFileSync(
     path.join(DIST_DIR, 'package.json'),

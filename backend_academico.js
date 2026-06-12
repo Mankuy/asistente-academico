@@ -36,6 +36,13 @@ const {
   filterAcceptedSuggestions,
 } = require('./audit_json');
 const {
+  REVISION_AUDIT_SCHEMA_HINT,
+  extractRevisionAuditJSON,
+  formatRevisionForRewrite,
+  filterAcceptedRevisionPoints,
+  detectDeterministicRevisionSignals,
+} = require('./revision_audit');
+const {
   rebuildBibliotecaIndex,
   searchBibliotecaLocal,
   formatLocalBibliotecaHits,
@@ -854,6 +861,39 @@ Salida:
 }
 `;
 
+const REVISION_AUDIT_SYSTEM_PROMPT = SYSTEM_PROMPT_V3 + `
+
+**MODO: AUDITORÍA DE DICTAMEN DE PARES (devolución recibida)**
+
+Analizá el dictamen del revisor o comité (NO el manuscrito del autor). Identificá cada observación, su validez y cómo responderla en una carta formal.
+
+**Respondé ÚNICAMENTE con JSON válido** con esta forma:
+${REVISION_AUDIT_SCHEMA_HINT}
+
+Reglas:
+- "puntos_revisor" debe listar cada punto accionable con quote literal del dictamen.
+- "tipo" solo: metodologico, formal, citacion, argumental.
+- "validez" solo: valido, parcial, cuestionable.
+- "indicios_ia" es orientativo (no concluyente): agregá señales estilométricas con verificado_por_codigo: false.
+- NO reescribas el manuscrito. Solo análisis del dictamen.
+`;
+
+const REVISION_REWRITE_SYSTEM_PROMPT = SYSTEM_PROMPT_V3 + `
+
+**MODO: CARTA DE RESPUESTA A REVISORES (Fase 2)**
+
+Recibirás el dictamen original del revisor y el informe estructurado de la Fase 1.
+
+**Tu tarea:** Redactá la **carta de respuesta formal** al comité de pares:
+- Agradecimiento inicial por la revisión.
+- Responder punto por punto SOLO los puntos aceptados en el informe.
+- Por cada punto: citar brevemente la observación del revisor y responder con tono académico acorde al [Contexto] de nivel.
+- Aceptá lo válido; refutá lo cuestionable con argumentos, sin agresividad.
+- NO reescribas el manuscrito del autor.
+- NO incluyas auditoría meta ni JSON.
+- NO agregues "### Referencias Bibliográficas" salvo citas imprescindibles en la carta.
+`;
+
 const REWRITE_SYSTEM_PROMPT_V3 = SYSTEM_PROMPT_V3 + `
 
 **MODO: REESCRITURA (Fase 2) — TEXTO OPTIMIZADO**
@@ -951,7 +991,37 @@ function extractCitationQueries(inputText) {
     queries.add(match[1].trim());
     if (queries.size >= MAX_ACADEMIC_LOOKUPS) break;
   }
+
+  const narrativeRe = /([A-ZÀ-ÿ][A-Za-zÀ-ÿ\s.'-]{1,50}(?:\s*&\s*[A-ZÀ-ÿ][A-Za-zÀ-ÿ\s.'-]{1,50})?),\s*(20\d{2}[a-z]?)/g;
+  while ((match = narrativeRe.exec(inputText)) !== null) {
+    queries.add(`${match[1].trim()}, ${match[2]}`);
+    if (queries.size >= MAX_ACADEMIC_LOOKUPS) break;
+  }
+
   return [...queries];
+}
+
+async function detectRevisionCitationSignals(inputText) {
+  const queries = extractCitationQueries(inputText);
+  const signals = [];
+  for (const query of queries) {
+    const crossref = await searchAcademicData(query);
+    if (!crossref) {
+      signals.push({
+        detalle: `Cita no verificada en Crossref: "${query}" (posible referencia inventada).`,
+        verificado_por_codigo: true,
+      });
+    }
+  }
+  return signals;
+}
+
+async function collectRevisionCodeSignals(inputText) {
+  const citationSignals = await detectRevisionCitationSignals(inputText);
+  return [
+    ...detectDeterministicRevisionSignals(inputText),
+    ...citationSignals,
+  ];
 }
 
 function formatCrossrefWork(item) {
@@ -1062,6 +1132,19 @@ async function buildRewriteUserText(inputText, norma, nivel, auditReport, sessio
   return `${contextualized}\n\n--- INFORME DE AUDITORÍA (FASE 1) ---\n${auditReport}\n\n--- FIN INFORME ---\n\nReescribí el texto aplicando las correcciones del informe e incluí la sección ### Referencias Bibliográficas al final.`;
 }
 
+async function buildRevisionContextualizedUserText(inputText, norma, nivel) {
+  const normaVal = norma || 'APA 7ª ed.';
+  const nivelVal = nivel || 'Trabajo de Grado';
+  const academicBlock = await buildAcademicContextBlock(inputText);
+  const academicPart = academicBlock ? `\n\n${academicBlock}` : '';
+  return `[Contexto: Estás analizando un dictamen de revisión por pares recibido para un/a ${nivelVal} con normas ${normaVal}. El output será una carta de respuesta, no una reescritura del manuscrito.]${academicPart}\n\n${inputText}`;
+}
+
+async function buildRevisionRewriteUserText(inputText, norma, nivel, auditReport) {
+  const contextualized = await buildRevisionContextualizedUserText(inputText, norma, nivel);
+  return `${contextualized}\n\n--- INFORME DEL DICTAMEN (FASE 1) ---\n${auditReport}\n\n--- FIN INFORME ---\n\nRedactá la carta de respuesta formal al comité de pares, punto por punto, solo para los puntos aceptados en el informe.`;
+}
+
 async function buildAllowedCitationsForIntegrity(inputText, sessionContext = null) {
   const citations = extractCitations(inputText).map((item) => item.raw);
   const queries = extractCitationQueries(inputText);
@@ -1097,6 +1180,40 @@ async function runAuditStage(inputText, norma, nivel, sessionContext = null) {
     jsonMode: true,
   });
   return { ...extractAuditJSON(auditRaw, inputText), modelUsed };
+}
+
+async function runRevisionAuditStage(inputText, norma, nivel) {
+  const codeSignals = await collectRevisionCodeSignals(inputText);
+  const contextualizedText = await buildRevisionContextualizedUserText(inputText, norma, nivel);
+  const { content: auditRaw, modelUsed } = await callLlm(REVISION_AUDIT_SYSTEM_PROMPT, contextualizedText, {
+    maxTokens: LLM_MAX_TOKENS_AUDIT,
+    jsonMode: true,
+  });
+  return { ...extractRevisionAuditJSON(auditRaw, codeSignals), modelUsed };
+}
+
+async function runRevisionRewriteStage(inputText, norma, nivel, auditResult) {
+  const auditReport = typeof auditResult === 'string'
+    ? auditResult
+    : formatRevisionForRewrite(auditResult?.auditJson);
+  const userText = await buildRevisionRewriteUserText(inputText, norma, nivel, auditReport);
+  const { content: optimizedRaw, modelUsed } = await callLlm(REVISION_REWRITE_SYSTEM_PROMPT, userText, {
+    maxTokens: LLM_MAX_TOKENS_REWRITE,
+  });
+
+  return {
+    optimizedText: sanitizeZeroWidth(String(optimizedRaw || '').trim()),
+    modelUsed,
+    integrity: {
+      ok: true,
+      citas_perdidas: [],
+      citas_inventadas: [],
+      citas_alteradas: [],
+      datos_alterados: [],
+      skipped: true,
+      reason: 'revision_response_letter',
+    },
+  };
 }
 
 async function runRewriteStage(inputText, norma, nivel, auditResult, sessionContext = null) {
@@ -1219,6 +1336,7 @@ const suggestSchema = Joi.object({
   sessionId: Joi.string().uuid().optional(),
   costConfirmed: Joi.boolean().optional(),
   guardianModel: Joi.string().trim().max(300).allow('').optional(),
+  docType: Joi.string().valid('trabajo', 'revision').optional(),
 }).options({ stripUnknown: true });
 
 const sessionCreateSchema = Joi.object({
@@ -1738,6 +1856,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     let norma = value.norma || 'APA 7ª ed.';
     let nivel = value.nivel || 'Trabajo de Grado';
     const stage = value.stage || 'full';
+    const docType = value.docType === 'revision' ? 'revision' : 'trabajo';
     const provider = getLlmProvider(getLlmProviderId());
     const mainModel = getLlmModel();
     const guardianModel = String(value.guardianModel || '').trim() || getLlmFastModel();
@@ -1760,7 +1879,8 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       }
     }
 
-    if (await containsEvasionIntent(inputText, guardianModel)) {
+    // Modo revisión: el dictamen puede mencionar Turnitin/plagio legítimamente; el output es carta de respuesta, no reescritura evasiva.
+    if (docType !== 'revision' && await containsEvasionIntent(inputText, guardianModel)) {
       console.log('[api/suggest] Intención de evasión bloqueada (guardián)');
       return res.json({
         redirect: true,
@@ -1791,8 +1911,10 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     }
 
     if (stage === 'audit') {
-      console.log(`[api/suggest] Fase 1 (Auditoría JSON) · ${provider.label} · ${getLlmModel()}`);
-      const auditResult = await runAuditStage(inputText, norma, nivel, sessionContext);
+      console.log(`[api/suggest] Fase 1 (${docType === 'revision' ? 'Dictamen' : 'Auditoría JSON'}) · ${provider.label} · ${getLlmModel()}`);
+      const auditResult = docType === 'revision'
+        ? await runRevisionAuditStage(inputText, norma, nivel)
+        : await runAuditStage(inputText, norma, nivel, sessionContext);
       const usage = recordSuggestUsage(
         value.sessionId,
         'audit',
@@ -1803,6 +1925,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       return res.json({
         redirect: false,
         stage: 'audit',
+        docType,
         ...buildAuditApiPayload(auditResult),
         modelUsed: auditResult.modelUsed || getLlmModel(),
         norma,
@@ -1828,15 +1951,21 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
         : value.audit.trim();
 
       if (value.auditJson && Array.isArray(value.acceptedSuggestions) && value.acceptedSuggestions.length) {
-        const filteredJson = filterAcceptedSuggestions(value.auditJson, value.acceptedSuggestions);
+        const filteredJson = docType === 'revision'
+          ? filterAcceptedRevisionPoints(value.auditJson, value.acceptedSuggestions)
+          : filterAcceptedSuggestions(value.auditJson, value.acceptedSuggestions);
         auditResult = {
           auditJson: filteredJson,
-          audit: formatAuditForRewrite(filteredJson),
+          audit: docType === 'revision'
+            ? formatRevisionForRewrite(filteredJson)
+            : formatAuditForRewrite(filteredJson),
           auditMode: 'json',
         };
       }
 
-      const rewriteResult = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
+      const rewriteResult = docType === 'revision'
+        ? await runRevisionRewriteStage(inputText, norma, nivel, auditResult)
+        : await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
       const usage = recordSuggestUsage(
         value.sessionId,
         'rewrite',
@@ -1847,6 +1976,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       return res.json({
         redirect: false,
         stage: 'rewrite',
+        docType,
         optimizedText: rewriteResult.optimizedText,
         integrity: rewriteResult.integrity,
         modelUsed: rewriteResult.modelUsed || getLlmModel(),
@@ -1861,8 +1991,12 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     }
 
     console.log(`[api/suggest] Análisis completo (2 etapas) · ${provider.label} · ${getLlmModel()}`);
-    const auditResult = await runAuditStage(inputText, norma, nivel, sessionContext);
-    const rewriteResult = await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
+    const auditResult = docType === 'revision'
+      ? await runRevisionAuditStage(inputText, norma, nivel)
+      : await runAuditStage(inputText, norma, nivel, sessionContext);
+    const rewriteResult = docType === 'revision'
+      ? await runRevisionRewriteStage(inputText, norma, nivel, auditResult)
+      : await runRewriteStage(inputText, norma, nivel, auditResult, sessionContext);
     const usage = recordSuggestUsage(
       value.sessionId,
       'full',
@@ -1874,6 +2008,7 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
     return res.json({
       redirect: false,
       stage: 'full',
+      docType,
       ...buildAuditApiPayload(auditResult),
       optimizedText: rewriteResult.optimizedText,
       integrity: rewriteResult.integrity,
@@ -1889,7 +2024,9 @@ app.post('/api/suggest', asyncHandler(async (req, res) => {
       providerLabel: provider.label,
       usage,
       bunkerMode: isBunkerMode(),
-      explanation: 'Análisis en dos etapas (Auditoría JSON + Reescritura) con System Prompt v3.1.',
+      explanation: docType === 'revision'
+        ? 'Análisis de dictamen + carta de respuesta (modo revisión por pares).'
+        : 'Análisis en dos etapas (Auditoría JSON + Reescritura) con System Prompt v3.1.',
     });
   } catch (err) {
     if (err instanceof ApiError) {
@@ -1959,6 +2096,7 @@ module.exports = {
   ApiError,
   searchAcademicData,
   extractCitationQueries,
+  collectRevisionCodeSignals,
   buildSessionContextBlock,
   extractAuditJSON,
   sanitizeZeroWidth,
