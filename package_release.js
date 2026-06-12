@@ -1,3 +1,7 @@
+// REGLAS DEL RELEASE (decisión v3, no cambiar sin aprobación):
+// - Los test_*.js y run_all_tests.js NUNCA entran al ZIP.
+// - El package.json del release no lleva script "test".
+
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -17,9 +21,6 @@ const FILES_TO_COPY = [
   'pdf_export.js',
   'integrity_verify.js',
   'bunker.js',
-  'test_composer_v6.js',
-  'test_composer_v7.js',
-  'run_all_tests.js',
   'iniciar_asistente.bat',
   'Dockerfile',
   'docker-compose.yml',
@@ -38,9 +39,13 @@ const PACKAGE_JSON_RELEASE = {
   },
   scripts: {
     start: 'node backend_academico.js',
-    test: 'node run_all_tests.js',
   },
 };
+
+/** Archivos exclusivos del repo dev — nunca van al ZIP aunque figuren en FILES_TO_COPY. */
+function isDevOnlyArtifact(fileName) {
+  return /^test_.*\.js$/i.test(fileName) || fileName === 'run_all_tests.js';
+}
 
 const ENV_EXAMPLE = [
   '# ── Servidor ──',
@@ -139,6 +144,10 @@ function createRelease() {
   fs.mkdirSync(DIST_DIR, { recursive: true });
 
   for (const fileName of FILES_TO_COPY) {
+    if (isDevOnlyArtifact(fileName)) {
+      console.log(`  - ${fileName} (excluido: dev-only)`);
+      continue;
+    }
     const src = path.join(ROOT, fileName);
     if (!fs.existsSync(src)) {
       throw new Error(`Archivo requerido no encontrado: ${fileName}`);
