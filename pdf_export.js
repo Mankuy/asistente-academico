@@ -6,6 +6,7 @@ const {
   assembleSessionBlocks,
   splitBodyAndReferences,
 } = require('./docx_export');
+const { sessionHasPreservedCover } = require('./sessions_store');
 
 const PAGE_MARGIN = 72;
 const FONT_SIZE = 12;
@@ -78,6 +79,22 @@ function writeBodyParagraph(doc, text, norma) {
   });
 }
 
+function writeVerbatimBlock(doc, text, options = {}) {
+  const lines = String(text || '').split('\n');
+  for (const line of lines) {
+    if (!line.trim()) {
+      doc.moveDown(0.35);
+      continue;
+    }
+    writeParagraph(doc, line, {
+      align: options.centered ? 'center' : 'left',
+      indent: 0,
+      lineGap: LINE_HEIGHT - FONT_SIZE,
+      paragraphGap: 0,
+    });
+  }
+}
+
 function writeReferenceLine(doc, line, norma) {
   const hanging = norma.startsWith('APA') ? 36 : 18;
   writeParagraph(doc, line, {
@@ -124,7 +141,10 @@ async function exportPdfEntregable({
   doc.pipe(stream);
   attachPageNumbers(doc);
 
-  writeCover(doc, { title: docTitle, author, norma });
+  const skipAutoCover = sessionHasPreservedCover(session?.chapters || []);
+  if (!skipAutoCover) {
+    writeCover(doc, { title: docTitle, author, norma });
+  }
 
   for (const segment of segments) {
     if (segment.type === 'heading') {
@@ -133,6 +153,13 @@ async function exportPdfEntregable({
       } else {
         writeHeading(doc, segment.title, norma);
       }
+      continue;
+    }
+
+    if (segment.type === 'body_verbatim') {
+      writeVerbatimBlock(doc, segment.text, {
+        centered: segment.verbatimStyle === 'centered',
+      });
       continue;
     }
 

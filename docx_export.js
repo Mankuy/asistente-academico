@@ -10,6 +10,7 @@ const {
   AlignmentType,
   PageBreak,
 } = require('docx');
+const { isPreservedFragment, sessionHasPreservedCover } = require('./sessions_store');
 
 const ENTREGABLES_DIR = path.join(__dirname, 'entregables');
 
@@ -44,6 +45,19 @@ function splitBodyAndReferences(text) {
   };
 }
 
+function splitBodyPreserved(text) {
+  const marker = /###\s*Referencias Bibliográficas/i;
+  const raw = String(text || '');
+  const match = raw.match(marker);
+  if (!match) {
+    return { body: raw, references: '' };
+  }
+  return {
+    body: raw.slice(0, match.index),
+    references: raw.slice(match.index).replace(marker, '').trim(),
+  };
+}
+
 function getSortedFragments(chapters) {
   return [...(chapters || [])].sort((a, b) => (a.index || 0) - (b.index || 0));
 }
@@ -63,6 +77,23 @@ function assembleSessionBlocks(chapters) {
   const segments = [];
 
   for (const fragment of sorted) {
+    const preserved = isPreservedFragment(fragment);
+    const bodySource = fragment.optimizedText || fragment.originalText || '';
+    const body = preserved
+      ? splitBodyPreserved(bodySource).body
+      : splitBodyAndReferences(bodySource).body;
+
+    if (preserved) {
+      if (body) {
+        segments.push({
+          type: 'body_verbatim',
+          text: body,
+          verbatimStyle: fragment.kind === 'caratula' ? 'centered' : 'left',
+        });
+      }
+      continue;
+    }
+
     const headingLevel = getFragmentHeadingLevel(fragment);
     if (headingLevel === 1) {
       markedChapterNum += 1;
@@ -75,7 +106,6 @@ function assembleSessionBlocks(chapters) {
       }
     }
 
-    const body = splitBodyAndReferences(fragment.optimizedText || '').body;
     if (body) {
       segments.push({ type: 'body', text: body });
     }
@@ -120,6 +150,16 @@ function subheadingParagraph(title, norma) {
   });
 }
 
+function verbatimParagraphs(text, norma, options = {}) {
+  const centered = options.centered === true;
+  const lines = String(text || '').split('\n');
+  return lines.map((line) => paragraphFromLine(line, {
+    alignment: centered ? AlignmentType.CENTER : undefined,
+    spacing: { line: 480, after: line.trim() ? 120 : 60 },
+    indent: undefined,
+  }));
+}
+
 function buildBodyFromSegments(segments, norma) {
   const children = [];
   for (const segment of segments) {
@@ -129,6 +169,12 @@ function buildBodyFromSegments(segments, norma) {
       } else {
         children.push(headingParagraph(segment.title, norma));
       }
+      continue;
+    }
+    if (segment.type === 'body_verbatim') {
+      children.push(...verbatimParagraphs(segment.text, norma, {
+        centered: segment.verbatimStyle === 'centered',
+      }));
       continue;
     }
     children.push(...bodyParagraphs(segment.text, norma));
@@ -235,13 +281,16 @@ function buildMlaDocument({ title, author, authorLastName, body, references }) {
   });
 }
 
-function buildGenericDocument({ title, author, body, references }) {
-  const children = [
-    paragraphFromLine(title, { size: 32 }),
-    paragraphFromLine(author, { size: 26 }),
-    new Paragraph({ children: [new PageBreak()] }),
-    ...bodyParagraphs(body, 'GENERIC'),
-  ];
+function buildGenericDocument({ title, author, body, references, skipAutoCover = false }) {
+  const children = [];
+  if (!skipAutoCover) {
+    children.push(
+      paragraphFromLine(title, { size: 32 }),
+      paragraphFromLine(author, { size: 26 }),
+      new Paragraph({ children: [new PageBreak()] })
+    );
+  }
+  children.push(...bodyParagraphs(body, 'GENERIC'));
   if (references) {
     children.push(paragraphFromLine('Referencias', { size: 26 }));
     children.push(...referenceParagraphs(references, 'GENERIC'));
@@ -249,21 +298,24 @@ function buildGenericDocument({ title, author, body, references }) {
   return new Document({ sections: [{ children }] });
 }
 
-function buildApaDocumentFromSegments({ title, author, segments, references }) {
-  const children = [
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 400 },
-      children: [new TextRun({ text: title, bold: true, size: 32 })],
-    }),
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 800 },
-      children: [new TextRun({ text: author, size: 26 })],
-    }),
-    new Paragraph({ children: [new PageBreak()] }),
-    ...buildBodyFromSegments(segments, 'APA'),
-  ];
+function buildApaDocumentFromSegments({ title, author, segments, references, skipAutoCover = false }) {
+  const children = [];
+  if (!skipAutoCover) {
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 400 },
+        children: [new TextRun({ text: title, bold: true, size: 32 })],
+      }),
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 800 },
+        children: [new TextRun({ text: author, size: 26 })],
+      }),
+      new Paragraph({ children: [new PageBreak()] })
+    );
+  }
+  children.push(...buildBodyFromSegments(segments, 'APA'));
 
   if (references) {
     children.push(new Paragraph({
@@ -276,22 +328,25 @@ function buildApaDocumentFromSegments({ title, author, segments, references }) {
   return new Document({ sections: [{ children }] });
 }
 
-function buildMlaDocumentFromSegments({ title, author, authorLastName, segments, references }) {
+function buildMlaDocumentFromSegments({ title, author, authorLastName, segments, references, skipAutoCover = false }) {
   const lastName = authorLastName || author.split(/\s+/).pop() || 'Autor';
-  const children = [
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 300 },
-      children: [new TextRun({ text: author, size: 24 })],
-    }),
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 200 },
-      children: [new TextRun({ text: title, bold: true, size: 28 })],
-    }),
-    new Paragraph({ children: [new PageBreak()] }),
-    ...buildBodyFromSegments(segments, 'MLA'),
-  ];
+  const children = [];
+  if (!skipAutoCover) {
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 300 },
+        children: [new TextRun({ text: author, size: 24 })],
+      }),
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 200 },
+        children: [new TextRun({ text: title, bold: true, size: 28 })],
+      }),
+      new Paragraph({ children: [new PageBreak()] })
+    );
+  }
+  children.push(...buildBodyFromSegments(segments, 'MLA'));
 
   if (references) {
     children.push(new Paragraph({
@@ -333,13 +388,33 @@ async function exportDocxEntregable({
   let document;
   if (session?.chapters?.length) {
     const { segments, references } = assembleSessionBlocks(session.chapters);
+    const skipAutoCover = sessionHasPreservedCover(session.chapters);
     if (norma.startsWith('MLA')) {
-      document = buildMlaDocumentFromSegments({ title: docTitle, author, authorLastName, segments, references });
+      document = buildMlaDocumentFromSegments({
+        title: docTitle,
+        author,
+        authorLastName,
+        segments,
+        references,
+        skipAutoCover,
+      });
     } else if (norma.startsWith('APA')) {
-      document = buildApaDocumentFromSegments({ title: docTitle, author, segments, references });
+      document = buildApaDocumentFromSegments({
+        title: docTitle,
+        author,
+        segments,
+        references,
+        skipAutoCover,
+      });
     } else {
       const body = segments.map((s) => (s.type === 'heading' ? s.title : s.text)).join('\n\n');
-      document = buildGenericDocument({ title: docTitle, author, body, references });
+      document = buildGenericDocument({
+        title: docTitle,
+        author,
+        body,
+        references,
+        skipAutoCover,
+      });
     }
   } else {
     const { body, references } = splitBodyAndReferences(text);

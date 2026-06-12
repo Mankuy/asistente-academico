@@ -490,6 +490,68 @@
             flex-wrap: wrap;
             margin-top: 0.5rem;
         }
+        .thesis-preflight-modal {
+            max-width: 640px;
+            width: 100%;
+            max-height: 85vh;
+            overflow: auto;
+        }
+        .thesis-preflight-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            margin: 0.5rem 0 0.75rem;
+        }
+        .thesis-preflight-item {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-size: 0.9rem;
+        }
+        .thesis-preflight-auditable {
+            margin-top: 0.5rem;
+            max-height: 180px;
+            overflow: auto;
+            font-size: 0.82rem;
+            color: var(--muted);
+        }
+        .thesis-preflight-auditable-item {
+            padding: 0.2rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .thesis-preflight-cost {
+            font-size: 0.9rem;
+            margin: 0.75rem 0;
+        }
+        .thesis-preflight-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-top: 0.5rem;
+        }
+        .chapter-item-preserved .chapter-item-label {
+            opacity: 0.78;
+            font-style: italic;
+        }
+        .preserved-notice {
+            background: var(--badge-bg);
+            border: 1px solid var(--border);
+            border-radius: 0.45rem;
+            padding: 0.55rem 0.7rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+        .preserved-text,
+        .block-text.preserved-text {
+            white-space: pre-wrap;
+            font-family: inherit;
+            line-height: 1.55;
+        }
+        .full-session-preserved {
+            border-left: 3px solid var(--border);
+            padding-left: 0.65rem;
+        }
         .analysis-toolbar {
             display: flex;
             justify-content: flex-end;
@@ -1523,6 +1585,24 @@
     © 2026 Asistente de Escritura Académica – Todos los derechos reservados.
 </footer>
 
+<div id="thesis-preflight-overlay" class="settings-overlay" aria-hidden="true">
+    <div class="settings-modal thesis-preflight-modal" role="dialog" aria-labelledby="thesis-preflight-title">
+        <h2 id="thesis-preflight-title">📋 Plan de procesamiento</h2>
+        <p id="thesis-preflight-summary"></p>
+        <div id="thesis-preflight-preserved"></div>
+        <details id="thesis-preflight-auditable-wrap" class="thesis-preflight-auditable-wrap">
+            <summary id="thesis-preflight-auditable-summary"></summary>
+            <div id="thesis-preflight-auditable" class="thesis-preflight-auditable"></div>
+        </details>
+        <p id="thesis-preflight-cost" class="thesis-preflight-cost">Calculando costo estimado…</p>
+        <div class="thesis-preflight-actions">
+            <button type="button" id="thesis-preflight-start" class="btn btn-primary">Comenzar</button>
+            <button type="button" id="thesis-preflight-cancel" class="btn">Cancelar</button>
+        </div>
+    </div>
+</div>
+
+<script src="thesis_classify.js"></script>
 <script>
     (function () {
         const editor = document.getElementById('editor');
@@ -2269,6 +2349,11 @@
             const parts = [];
 
             for (const fragment of sorted) {
+                if (fragment.preserved) {
+                    const preservedBody = splitBodyAndReferencesClient(fragment.optimizedText || fragment.originalText || '').body;
+                    if (preservedBody) parts.push(preservedBody);
+                    continue;
+                }
                 const heading = getChapterHeadingLabel(fragment, sorted);
                 if (heading) parts.push(heading);
                 const body = stripReferencesSection(fragment.optimizedText);
@@ -2312,11 +2397,20 @@
 
         const FULL_SESSION_VIEW_ID = '__full__';
 
+        function splitBodyAndReferencesClient(text) {
+            const marker = /###\s*Referencias Bibliográficas/i;
+            const raw = String(text || '');
+            const match = raw.match(marker);
+            if (!match) return { body: raw, references: '' };
+            const idx = match.index;
+            return {
+                body: raw.slice(0, idx),
+                references: raw.slice(idx).replace(marker, '').trim(),
+            };
+        }
+
         function stripReferencesSection(text) {
-            const marker = '### Referencias Bibliográficas';
-            const idx = String(text || '').indexOf(marker);
-            if (idx === -1) return String(text || '').trim();
-            return String(text).slice(0, idx).trim();
+            return splitBodyAndReferencesClient(text).body.trim();
         }
 
         function extractReferencesSection(text) {
@@ -2360,6 +2454,14 @@
 
             const combinedText = buildCombinedOptimizedText(sorted);
             const blocksHtml = sorted.map((fragment) => {
+                if (fragment.preserved) {
+                    const preservedBody = splitBodyAndReferencesClient(fragment.optimizedText || fragment.originalText || '').body;
+                    return `
+                <article class="full-session-block full-session-preserved">
+                    <p class="preserved-notice">📌 Conservado sin corrección — se incluye tal cual en el documento final</p>
+                    <div class="block-text preserved-text">${escapeHtml(preservedBody)}</div>
+                </article>`;
+                }
                 const heading = getChapterHeadingLabel(fragment, sorted);
                 const headingLevel = getFragmentHeadingLevel(fragment);
                 const headingHtml = heading
@@ -3286,10 +3388,10 @@
                     📄 Texto completo (${sorted.length})
                 </div>
                 ${sorted.map((chapter) => `
-                <div class="chapter-item chapter-item-fragment ${chapter.id === activeChapterId ? 'active' : ''} ${dragEnabled ? '' : 'chapter-item-locked'}"
+                <div class="chapter-item chapter-item-fragment ${chapter.id === activeChapterId ? 'active' : ''} ${chapter.preserved ? 'chapter-item-preserved' : ''} ${dragEnabled ? '' : 'chapter-item-locked'}"
                      data-chapter-id="${escapeAttr(chapter.id)}"
                      ${dragEnabled ? 'draggable="true"' : ''}>
-                    <span class="chapter-item-label" data-chapter-id="${escapeAttr(chapter.id)}" title="Doble clic para renombrar">${chapter.index}. ${escapeHtml(chapter.title)}</span>
+                    <span class="chapter-item-label" data-chapter-id="${escapeAttr(chapter.id)}" title="Doble clic para renombrar">${chapter.preserved ? '📌 ' : ''}${chapter.index}. ${escapeHtml(chapter.title)}</span>
                     <div class="chapter-item-actions">
                         <button type="button" class="chapter-action-btn chapter-delete-btn" data-chapter-id="${escapeAttr(chapter.id)}" title="Eliminar fragmento">🗑️</button>
                     </div>
@@ -3475,6 +3577,18 @@
             renderChaptersList(activeSessionData.chapters);
             skipAutoAnalyze = true;
             editor.value = chapter.originalText;
+
+            if (chapter.preserved) {
+                const preservedBody = splitBodyAndReferencesClient(chapter.optimizedText || chapter.originalText || '').body;
+                learningPanel.innerHTML = `
+                    <div class="preserved-fragment-view">
+                        <p class="preserved-notice">Conservado sin corrección — se incluye tal cual en el documento final</p>
+                        <div class="preserved-text">${escapeHtml(preservedBody)}</div>
+                    </div>`;
+                setTimeout(() => { skipAutoAnalyze = false; }, 0);
+                return;
+            }
+
             showPedagogicalAnalysis(
                 chapter.auditJson,
                 chapter.audit,
@@ -3894,6 +4008,188 @@
             });
         }
 
+        const thesisPreflightOverlay = document.getElementById('thesis-preflight-overlay');
+        const thesisPreflightSummary = document.getElementById('thesis-preflight-summary');
+        const thesisPreflightPreserved = document.getElementById('thesis-preflight-preserved');
+        const thesisPreflightAuditableSummary = document.getElementById('thesis-preflight-auditable-summary');
+        const thesisPreflightAuditable = document.getElementById('thesis-preflight-auditable');
+        const thesisPreflightCost = document.getElementById('thesis-preflight-cost');
+        const thesisPreflightStartBtn = document.getElementById('thesis-preflight-start');
+        const thesisPreflightCancelBtn = document.getElementById('thesis-preflight-cancel');
+
+        async function estimateThesisChunkCost(text, sessionId) {
+            try {
+                const { response, data } = await apiJson('/api/estimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, sessionId }),
+                });
+                if (!response.ok) return 0;
+                return Number(data.estimateUsd || 0);
+            } catch {
+                return 0;
+            }
+        }
+
+        async function recalculateThesisPreflightCost(chunks, sessionId) {
+            const auditable = chunks.filter((chunk) => !chunk.preserved);
+            const preserved = chunks.filter((chunk) => chunk.preserved);
+            const batchSize = 4;
+            let auditableCost = 0;
+            let preservedCost = 0;
+
+            for (let i = 0; i < auditable.length; i += batchSize) {
+                const batch = auditable.slice(i, i + batchSize);
+                const costs = await Promise.all(batch.map((chunk) => estimateThesisChunkCost(chunk.text, sessionId)));
+                auditableCost += costs.reduce((sum, value) => sum + value, 0);
+            }
+            for (let i = 0; i < preserved.length; i += batchSize) {
+                const batch = preserved.slice(i, i + batchSize);
+                const costs = await Promise.all(batch.map((chunk) => estimateThesisChunkCost(chunk.text, sessionId)));
+                preservedCost += costs.reduce((sum, value) => sum + value, 0);
+            }
+
+            return { auditableCost, preservedCost };
+        }
+
+        function getThesisChunkLabel(chunk, index) {
+            if (chunk.classificationLabel) return chunk.classificationLabel;
+            if (chunk.kind && window.thesisClassify?.defaultLabelForKind) {
+                return window.thesisClassify.defaultLabelForKind(chunk.kind);
+            }
+            return `Fragmento ${index + 1}`;
+        }
+
+        function renderThesisPreflightSections(workingChunks) {
+            const preservedItems = [];
+            const auditableItems = [];
+
+            workingChunks.forEach((chunk, index) => {
+                const label = getThesisChunkLabel(chunk, index);
+                const preview = String(chunk.text || '').split('\n')[0].slice(0, 72);
+                if (chunk.preserved) {
+                    preservedItems.push(`
+                        <label class="thesis-preflight-item">
+                            <input type="checkbox" data-chunk-idx="${index}" checked>
+                            <span>${escapeHtml(label)}</span>
+                        </label>`);
+                } else {
+                    auditableItems.push(`
+                        <label class="thesis-preflight-auditable-item thesis-preflight-item">
+                            <input type="checkbox" data-chunk-idx="${index}">
+                            <span>Conservar: ${escapeHtml(label)} — ${escapeHtml(preview)}</span>
+                        </label>`);
+                }
+            });
+
+            thesisPreflightPreserved.innerHTML = preservedItems.length
+                ? `<strong>📌 Conservar sin corrección (${preservedItems.length}):</strong><div class="thesis-preflight-list">${preservedItems.join('')}</div>`
+                : '<p><strong>📌 Conservar sin corrección (0):</strong> ninguno detectado. Podés marcar fragmentos en la lista de abajo.</p>';
+
+            const auditableCount = workingChunks.filter((chunk) => !chunk.preserved).length;
+            thesisPreflightAuditableSummary.textContent = `✏️ Auditar y corregir (${auditableCount})`;
+            thesisPreflightAuditable.innerHTML = auditableItems.length
+                ? auditableItems.join('')
+                : '<p>Todos los fragmentos quedarán conservados sin corrección.</p>';
+        }
+
+        function bindThesisPreflightToggles(workingChunks, sessionId, rerender) {
+            thesisPreflightOverlay.querySelectorAll('input[data-chunk-idx]').forEach((input) => {
+                input.addEventListener('change', async () => {
+                    const index = Number(input.dataset.chunkIdx);
+                    const chunk = workingChunks[index];
+                    if (!chunk) return;
+                    if (input.checked) {
+                        chunk.preserved = true;
+                        if (!chunk.kind) chunk.kind = 'preservado';
+                        if (!chunk.classificationLabel || chunk.classificationLabel === 'Prosa auditable') {
+                            chunk.classificationLabel = 'Conservado manualmente';
+                        }
+                    } else {
+                        chunk.preserved = false;
+                        chunk.kind = '';
+                        chunk.classificationLabel = 'Prosa auditable';
+                    }
+                    rerender();
+                    thesisPreflightCost.textContent = 'Calculando costo estimado…';
+                    const costs = await recalculateThesisPreflightCost(workingChunks, sessionId);
+                    thesisPreflightCost.textContent = `Costo estimado: USD ${costs.auditableCost.toFixed(4)} (ahorrás ~USD ${costs.preservedCost.toFixed(4)} por los conservados)`;
+                });
+            });
+        }
+
+        function showThesisPreflightModal(chunks, sessionId) {
+            return new Promise((resolve) => {
+                const workingChunks = chunks.map((chunk) => ({ ...chunk }));
+                const rerender = () => {
+                    renderThesisPreflightSections(workingChunks);
+                    bindThesisPreflightToggles(workingChunks, sessionId, rerender);
+                };
+
+                thesisPreflightSummary.textContent = `${workingChunks.length} fragmentos detectados`;
+                rerender();
+                thesisPreflightCost.textContent = 'Calculando costo estimado…';
+                recalculateThesisPreflightCost(workingChunks, sessionId).then((costs) => {
+                    thesisPreflightCost.textContent = `Costo estimado: USD ${costs.auditableCost.toFixed(4)} (ahorrás ~USD ${costs.preservedCost.toFixed(4)} por los conservados)`;
+                });
+
+                const closePreflight = () => {
+                    thesisPreflightOverlay.classList.remove('open');
+                    thesisPreflightOverlay.setAttribute('aria-hidden', 'true');
+                };
+
+                const onStart = () => {
+                    closePreflight();
+                    thesisPreflightStartBtn.removeEventListener('click', onStart);
+                    thesisPreflightCancelBtn.removeEventListener('click', onCancel);
+                    resolve(workingChunks);
+                };
+
+                const onCancel = () => {
+                    closePreflight();
+                    thesisPreflightStartBtn.removeEventListener('click', onStart);
+                    thesisPreflightCancelBtn.removeEventListener('click', onCancel);
+                    resolve(null);
+                };
+
+                thesisPreflightStartBtn.addEventListener('click', onStart);
+                thesisPreflightCancelBtn.addEventListener('click', onCancel);
+                thesisPreflightOverlay.classList.add('open');
+                thesisPreflightOverlay.setAttribute('aria-hidden', 'false');
+            });
+        }
+
+        async function savePreservedThesisChunk(chunk, sessionId, chunkIndex, total, abortSignal = null) {
+            const chunkText = chunk.text;
+            const chunkMeta = {
+                headingLevel: chunk.headingLevel ?? (chunk.isChapterStart ? 1 : 0),
+                isChapterStart: Boolean(chunk.isChapterStart),
+                chapterTitle: chunk.chapterTitle || '',
+            };
+            const fetchOptions = abortSignal ? { signal: abortSignal } : {};
+
+            assertThesisNotCancelled();
+
+            await apiJson(`/api/sessions/${sessionId}/chapters`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    originalText: chunkText,
+                    audit: '',
+                    optimizedText: chunkText,
+                    preserved: true,
+                    kind: chunk.kind || 'preservado',
+                    title: getThesisChunkLabel(chunk, chunkIndex - 1),
+                    headingLevel: chunkMeta.headingLevel,
+                    isChapterStart: chunkMeta.headingLevel === 1,
+                    chapterTitle: chunkMeta.headingLevel > 0 ? chunkMeta.chapterTitle : '',
+                    norma: normaSelect.value,
+                    nivel: nivelSelect.value,
+                }),
+                ...fetchOptions,
+            });
+        }
+
         async function processThesisChunkAuto(chunk, sessionId, chunkIndex, total, abortSignal = null) {
             const chunkText = typeof chunk === 'string' ? chunk : chunk.text;
             const chunkMeta = typeof chunk === 'string'
@@ -4016,14 +4312,25 @@
                     if (thesisJob.cancelled) break;
 
                     thesisJob.current = i + 1;
-                    showThesisProgress(`Procesando fragmento ${i + 1} de ${chunks.length}…`);
-                    await processThesisChunkAuto(
-                        chunks[i],
-                        sessionId,
-                        i + 1,
-                        chunks.length,
-                        thesisAbortController.signal
-                    );
+                    if (chunks[i].preserved) {
+                        showThesisProgress(`📌 Conservado: fragmento ${i + 1} de ${chunks.length}…`);
+                        await savePreservedThesisChunk(
+                            chunks[i],
+                            sessionId,
+                            i + 1,
+                            chunks.length,
+                            thesisAbortController.signal
+                        );
+                    } else {
+                        showThesisProgress(`Procesando fragmento ${i + 1} de ${chunks.length}…`);
+                        await processThesisChunkAuto(
+                            chunks[i],
+                            sessionId,
+                            i + 1,
+                            chunks.length,
+                            thesisAbortController.signal
+                        );
+                    }
                     if (thesisJob.cancelled) break;
                     await loadSessionDetails(sessionId);
                     await refreshSessionsList(sessionId);
@@ -4108,19 +4415,38 @@
                     extractedText = await extractDocxText(await readFileAsArrayBuffer(file));
                 }
 
-                const chunks = chunkThesisText(extractedText);
-                if (!chunks.length) {
+                const rawChunks = chunkThesisText(extractedText);
+                if (!rawChunks.length) {
                     showError('No se pudo trocear la tesis en capítulos.');
                     return;
                 }
+
+                const chunks = window.thesisClassify
+                    ? window.thesisClassify.annotateThesisChunks(rawChunks)
+                    : rawChunks;
 
                 const session = await createNewSession(file.name.replace(/\.[^.]+$/, ''));
                 if (!session) return;
 
                 setActiveSession(session.id);
                 activeSessionData = session;
+
+                showLoading('Clasificando fragmentos de front matter…', true);
+                const confirmedChunks = await showThesisPreflightModal(chunks, session.id);
+                if (!confirmedChunks) {
+                    await apiJson(`/api/sessions/${session.id}`, { method: 'DELETE' });
+                    if (activeSessionId === session.id) {
+                        activeSessionId = null;
+                        activeSessionData = null;
+                        await refreshSessionsList();
+                        renderChaptersList([]);
+                    }
+                    learningPanel.innerHTML = '<p>Modo Tesis cancelado antes de comenzar.</p>';
+                    return;
+                }
+
                 thesisResumeState = {
-                    chunks,
+                    chunks: confirmedChunks,
                     sessionId: session.id,
                     chunkIndex: 0,
                     fileLabel: file.name,

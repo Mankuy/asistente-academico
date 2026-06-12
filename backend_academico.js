@@ -1235,10 +1235,12 @@ const sessionUpdateSchema = Joi.object({
 }).options({ stripUnknown: true });
 
 const chapterCreateSchema = Joi.object({
-  originalText: Joi.string().trim().min(1).max(5000000).required(),
-  audit: Joi.string().trim().min(1).max(5000000).required(),
+  originalText: Joi.string().min(1).max(5000000).required(),
+  audit: Joi.string().max(5000000).allow('').optional(),
   auditJson: Joi.object().allow(null).optional(),
-  optimizedText: Joi.string().trim().min(1).max(5000000).required(),
+  optimizedText: Joi.string().max(5000000).allow('').optional(),
+  preserved: Joi.boolean().optional(),
+  kind: Joi.string().valid('', 'caratula', 'indice', 'preservado').optional(),
   title: Joi.string().trim().max(120).allow('').optional(),
   headingLevel: Joi.number().integer().valid(0, 1, 2).optional(),
   isChapterStart: Joi.boolean().optional(),
@@ -1246,6 +1248,25 @@ const chapterCreateSchema = Joi.object({
   modelUsed: Joi.string().trim().max(120).allow('').optional(),
   norma: Joi.string().valid(...NORMATIVA_OPTIONS).optional(),
   nivel: Joi.string().valid(...NIVEL_OPTIONS).optional(),
+}).custom((value, helpers) => {
+  const preserved = Boolean(value.preserved);
+  const originalText = String(value.originalText || '');
+  if (!originalText.trim()) {
+    return helpers.error('any.invalid', { message: 'originalText no puede estar vacío.' });
+  }
+  if (preserved) {
+    if (value.kind && !['caratula', 'indice', 'preservado'].includes(value.kind)) {
+      return helpers.error('any.invalid', { message: 'kind inválido para fragmento conservado.' });
+    }
+    return value;
+  }
+
+  const audit = String(value.audit || '').trim();
+  const optimizedText = String(value.optimizedText || '').trim();
+  if (!audit || !optimizedText) {
+    return helpers.error('any.invalid', { message: 'audit y optimizedText son obligatorios salvo fragmentos conservados.' });
+  }
+  return value;
 }).options({ stripUnknown: true });
 
 const chapterRenameSchema = Joi.object({

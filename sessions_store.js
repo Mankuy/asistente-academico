@@ -10,6 +10,7 @@ const EXCERPT_OPTIMIZED_MAX = 2200;
 const EXCERPT_AUDIT_MAX = 1200;
 const MAX_CONTEXT_CHAPTERS = 4;
 const MAX_USAGE_ENTRIES = 80;
+const PRESERVED_KINDS = ['caratula', 'indice', 'preservado'];
 
 function emptyUsage() {
   return {
@@ -178,16 +179,44 @@ function resolveChapterTitle(headingLevel, payload = {}) {
   return sanitizeLine(payload.chapterTitle) || '';
 }
 
+function resolvePreservedKind(payload = {}) {
+  const kind = String(payload.kind || '').trim();
+  return PRESERVED_KINDS.includes(kind) ? kind : '';
+}
+
+function isPreservedFragment(fragment) {
+  return Boolean(fragment?.preserved);
+}
+
+function sessionHasPreservedCover(chapters) {
+  return getSortedFragmentsForStore(chapters).some((ch) => isPreservedFragment(ch) && ch.kind === 'caratula');
+}
+
+function getSortedFragmentsForStore(chapters) {
+  return [...(chapters || [])].sort((a, b) => (a.index || 0) - (b.index || 0));
+}
+
 function addChapter(sessionId, payload = {}) {
   const session = getSession(sessionId);
   if (!session) return null;
 
   const chapterIndex = session.chapters.length + 1;
-  const originalText = String(payload.originalText || '').trim();
-  const audit = String(payload.audit || '').trim();
-  const optimizedText = String(payload.optimizedText || '').trim();
+  const preserved = Boolean(payload.preserved);
+  const kind = preserved ? resolvePreservedKind(payload) : '';
+  const originalText = preserved
+    ? String(payload.originalText || '')
+    : String(payload.originalText || '').trim();
+  const audit = preserved
+    ? String(payload.audit ?? '')
+    : String(payload.audit || '').trim();
+  const optimizedText = preserved
+    ? originalText
+    : String(payload.optimizedText || '').trim();
 
-  if (!originalText || !audit || !optimizedText) {
+  if (!originalText.trim()) {
+    throw new Error('Capítulo incompleto: se requiere originalText.');
+  }
+  if (!preserved && (!audit || !optimizedText)) {
     throw new Error('Capítulo incompleto: se requiere originalText, audit y optimizedText.');
   }
 
@@ -204,9 +233,11 @@ function addChapter(sessionId, payload = {}) {
     chapterTitle,
     originalText,
     audit,
-    auditJson: payload.auditJson && typeof payload.auditJson === 'object' ? payload.auditJson : null,
+    auditJson: preserved ? null : (payload.auditJson && typeof payload.auditJson === 'object' ? payload.auditJson : null),
     optimizedText,
-    modelUsed: sanitizeLine(payload.modelUsed) || null,
+    preserved,
+    kind,
+    modelUsed: preserved ? null : (sanitizeLine(payload.modelUsed) || null),
     norma: payload.norma || session.norma,
     nivel: payload.nivel || session.nivel,
     createdAt: new Date().toISOString(),
@@ -214,7 +245,7 @@ function addChapter(sessionId, payload = {}) {
 
   session.chapters.push(chapter);
 
-  if (session.nameAuto && chapterIndex === 1) {
+  if (session.nameAuto && chapterIndex === 1 && !(preserved && kind === 'caratula')) {
     session.name = deriveTitleFromText(originalText);
   }
 
@@ -311,7 +342,9 @@ function buildSessionContextForLlm(session) {
     return null;
   }
 
-  const sortedChapters = [...session.chapters].sort((a, b) => (a.index || 0) - (b.index || 0));
+  const sortedChapters = [...session.chapters]
+    .sort((a, b) => (a.index || 0) - (b.index || 0))
+    .filter((ch) => !isPreservedFragment(ch));
   const previousChapters = sortedChapters
     .slice(-MAX_CONTEXT_CHAPTERS)
     .map((ch) => ({
@@ -348,4 +381,8 @@ module.exports = {
   buildSessionContextForLlm,
   deriveTitleFromText,
   resolveHeadingLevel,
+  isPreservedFragment,
+  sessionHasPreservedCover,
+  resolvePreservedKind,
+  PRESERVED_KINDS,
 };

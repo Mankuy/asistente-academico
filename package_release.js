@@ -16,6 +16,7 @@ const FILES_TO_COPY = [
   'pdf_export.js',
   'integrity_verify.js',
   'bunker.js',
+  'test_composer_v6.js',
   'iniciar_asistente.bat',
   'Dockerfile',
   'docker-compose.yml',
