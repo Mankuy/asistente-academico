@@ -1774,6 +1774,7 @@
         const CLIENT_RETRY_MAX = 4;
         const ACTIVE_SESSION_KEY = 'academic-active-session';
         let lastAnalysisContext = null;
+        let lastAnalysisRequest = null;
         let retryCountdownTimer = null;
         let skipAutoAnalyze = false;
         let activeSessionId = localStorage.getItem(ACTIVE_SESSION_KEY) || null;
@@ -2248,11 +2249,176 @@
             }, 4200);
         }
 
+        function cloneRequestBody(body) {
+            return JSON.parse(JSON.stringify(body || {}));
+        }
+
+        function rememberAnalysisRequest(body) {
+            lastAnalysisRequest = {
+                body: cloneRequestBody(body),
+                stage: body?.stage || 'full',
+            };
+        }
+
+        function bindErrorRetryButton(retryBtn, options = {}) {
+            if (!retryBtn) return;
+
+            const retryAfterMs = Number(options.retryAfterMs || 0);
+            const startCountdown = () => {
+                let remaining = Math.max(1, Math.ceil(retryAfterMs / 1000));
+                retryBtn.disabled = true;
+                retryBtn.textContent = `Reintentar en ${remaining}s…`;
+                clearRetryCountdown();
+                const tick = () => {
+                    remaining -= 1;
+                    if (remaining <= 0) {
+                        clearRetryCountdown();
+                        retryBtn.disabled = false;
+                        retryBtn.textContent = '🔄 Reintentar';
+                        return;
+                    }
+                    retryBtn.textContent = `Reintentar en ${remaining}s…`;
+                };
+                tick();
+                retryCountdownTimer = setInterval(tick, 1000);
+            };
+
+            if (retryAfterMs > 0) {
+                startCountdown();
+            } else {
+                retryBtn.disabled = false;
+            }
+
+            retryBtn.addEventListener('click', async () => {
+                if (retryBtn.disabled) return;
+                retryBtn.disabled = true;
+                retryBtn.textContent = 'Reintentando…';
+                try {
+                    await handleRetryClick();
+                } catch (retryErr) {
+                    console.error('Retry error:', retryErr);
+                    showError(retryErr.message || 'El reintento falló.', {
+                        retryable: true,
+                        retryHint: options.retryHint,
+                        retryAfterMs: options.retryAfterMs,
+                    });
+                }
+            });
+        }
+
+        async function handleAuditStageSuccess(auditData, fallbackContext = {}) {
+            syncSessionUsage(auditData.usage);
+
+            const audit = auditData.audit;
+            const auditJson = auditData.auditJson || null;
+            const auditMode = auditData.auditMode || 'prose';
+            if (!audit) {
+                showError('La fase de auditoría no devolvió resultados.', { retryable: true });
+                return false;
+            }
+
+            pendingRewriteContext = {
+                text: fallbackContext.text || lastAnalysisRequest?.body?.text || editor.value.trim(),
+                audit,
+                auditJson,
+                auditMode,
+                norma: fallbackContext.norma || lastAnalysisRequest?.body?.norma || normaSelect.value,
+                nivel: fallbackContext.nivel || lastAnalysisRequest?.body?.nivel || nivelSelect.value,
+                docType: auditData.docType || fallbackContext.docType || getDocType(),
+                sessionId: fallbackContext.sessionId || lastAnalysisRequest?.body?.sessionId || activeSessionId,
+                costConfirmed: Boolean(fallbackContext.costConfirmed || lastAnalysisRequest?.body?.costConfirmed),
+            };
+            lastAnalysisContext = { ...pendingRewriteContext };
+
+            showAuditReview(
+                auditJson,
+                audit,
+                auditMode,
+                auditData.modelUsed,
+                pendingRewriteContext.docType
+            );
+            return true;
+        }
+
+        async function handleRewriteStageSuccess(rewriteData, ctx) {
+            const optimizedText = rewriteData.optimizedText;
+            if (!optimizedText) {
+                showError('La fase de reescritura no devolvió texto optimizado.', { retryable: true });
+                return false;
+            }
+
+            syncSessionUsage(rewriteData.usage);
+            const rewriteCtx = { ...ctx };
+            pendingRewriteContext = null;
+            await finalizeAnalysis(
+                rewriteCtx.text,
+                rewriteCtx.audit,
+                rewriteCtx.auditJson,
+                rewriteCtx.auditMode,
+                optimizedText,
+                rewriteData.integrity,
+                rewriteData.modelUsed,
+                rewriteCtx.docType || getDocType()
+            );
+            return true;
+        }
+
+        async function retryLastAnalysisRequest() {
+            if (!lastAnalysisRequest?.body) {
+                showToast('No hay solicitud guardada para reintentar.', true);
+                return;
+            }
+
+            const stage = lastAnalysisRequest.stage || lastAnalysisRequest.body.stage || 'full';
+            const phaseLabel = stage === 'rewrite' ? 'Fase 2' : (stage === 'audit' ? 'Fase 1' : 'Análisis');
+            analysisInFlight = true;
+            showLoading(`${phaseLabel}: Reintentando…`, true);
+
+            try {
+                const result = await postSuggestStage(lastAnalysisRequest.body);
+                if (!result.response.ok) {
+                    handleStageError(result, phaseLabel);
+                    return;
+                }
+
+                if (result.data.redirect && result.data.message) {
+                    showSuggestion(result.data.message);
+                    return;
+                }
+
+                if (stage === 'audit') {
+                    await handleAuditStageSuccess(result.data, lastAnalysisContext || {});
+                    return;
+                }
+
+                if (stage === 'rewrite') {
+                    const ctx = pendingRewriteContext || lastAnalysisContext || {
+                        text: lastAnalysisRequest.body.text,
+                        audit: lastAnalysisRequest.body.audit,
+                        auditJson: lastAnalysisRequest.body.auditJson,
+                        auditMode: lastAnalysisRequest.body.auditJson ? 'json' : 'prose',
+                        norma: lastAnalysisRequest.body.norma,
+                        nivel: lastAnalysisRequest.body.nivel,
+                        docType: lastAnalysisRequest.body.docType,
+                        sessionId: lastAnalysisRequest.body.sessionId,
+                    };
+                    await handleRewriteStageSuccess(result.data, ctx);
+                }
+            } finally {
+                analysisInFlight = false;
+            }
+        }
+
         async function handleRetryClick() {
             clearRetryCountdown();
 
             if (thesisResumeState?.chunks?.length && thesisResumeState.sessionId) {
                 await resumeThesisMode();
+                return;
+            }
+
+            if (lastAnalysisRequest?.body) {
+                await retryLastAnalysisRequest();
                 return;
             }
 
@@ -2275,26 +2441,16 @@
         function showError(message, options = {}) {
             clearRetryCountdown();
             const retryable = Boolean(options.retryable);
+            const retryAfterMs = Number(options.retryAfterMs || 0);
             learningPanel.innerHTML = `
                 <div class="error-message">
                     <strong>Error:</strong> ${escapeHtml(message)}
                     ${options.retryHint ? `<p class="retry-countdown">${escapeHtml(options.retryHint)}</p>` : ''}
-                    ${retryable ? `<div class="error-actions"><button type="button" class="btn-retry" id="retry-analysis-btn">🔄 Reintentar</button></div>` : ''}
+                    ${retryable ? `<div class="error-actions"><button type="button" class="btn-retry" id="retry-analysis-btn" disabled>🔄 Reintentar</button></div>` : ''}
                 </div>`;
 
             if (retryable) {
-                const retryBtn = document.getElementById('retry-analysis-btn');
-                if (retryBtn) {
-                    retryBtn.addEventListener('click', async () => {
-                        retryBtn.disabled = true;
-                        try {
-                            await handleRetryClick();
-                        } catch (retryErr) {
-                            console.error('Retry error:', retryErr);
-                            showError(retryErr.message || 'El reintento falló.', { retryable: true, retryHint: options.retryHint });
-                        }
-                    });
-                }
+                bindErrorRetryButton(document.getElementById('retry-analysis-btn'), options);
             }
         }
 
@@ -2961,27 +3117,11 @@
                     return;
                 }
 
-                const optimizedText = rewriteResult.data.optimizedText;
-                if (!optimizedText) {
-                    showError('La fase de reescritura no devolvió texto optimizado.', { retryable: true });
-                    return;
-                }
-
-                syncSessionUsage(rewriteResult.data.usage);
-                const rewriteCtx = { ...ctx };
-                pendingRewriteContext = null;
-                await finalizeAnalysis(
-                    rewriteCtx.text,
-                    rewriteCtx.audit,
-                    rewriteCtx.auditJson,
-                    rewriteCtx.auditMode,
-                    optimizedText,
-                    rewriteResult.data.integrity,
-                    rewriteResult.data.modelUsed,
-                    rewriteCtx.docType || getDocType()
-                );
+                await handleRewriteStageSuccess(rewriteResult.data, ctx);
             } catch (error) {
-                showError(error.message || 'No se pudo completar la optimización.', { retryable: true });
+                showError(error.message || 'No se pudo completar la optimización.', {
+                    retryable: isRetryableThrownError(error) || Boolean(lastAnalysisRequest?.body),
+                });
             } finally {
                 analysisInFlight = false;
             }
@@ -2990,6 +3130,7 @@
         async function finalizeAnalysis(text, audit, auditJson, auditMode, optimizedText, integrity = null, modelUsed = null, docType = 'trabajo') {
             clearRetryCountdown();
             lastAnalysisContext = null;
+            lastAnalysisRequest = null;
 
             const savedChapter = await saveChapterToSession(text, audit, optimizedText, auditJson, null, modelUsed);
             const banner = savedChapter
@@ -3025,6 +3166,7 @@
                 docType: payload.docType || getDocType(),
                 guardianModel: payload.guardianModel || getGuardianModelForRequest(),
             };
+            rememberAnalysisRequest(requestPayload);
             const response = await fetch('/api/suggest', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3118,10 +3260,13 @@
             }
             const message = formatApiError(result.response, result.data);
             const retryable = isRetryableApiData(result.data, result.response.status);
+            const retryAfterMs = Number(result.data?.retryAfterMs || 0);
             const retryHint = retryable
-                ? 'El proveedor pidió esperar. Podés reintentar manualmente o aguardar unos segundos.'
+                ? (retryAfterMs > 0
+                    ? `El proveedor pidió esperar ~${Math.ceil(retryAfterMs / 1000)}s antes de reintentar.`
+                    : 'El proveedor pidió esperar. Podés reintentar manualmente o aguardar unos segundos.')
                 : '';
-            showError(message, { retryable, retryHint });
+            showError(message, { retryable, retryHint, retryAfterMs });
         }
 
         function showCostConfirmation(estimateData, text) {
@@ -3751,36 +3896,20 @@
                     return;
                 }
 
-                syncSessionUsage(auditData.usage);
-
-                const audit = auditData.audit;
-                const auditJson = auditData.auditJson || null;
-                const auditMode = auditData.auditMode || 'prose';
-                if (!audit) {
-                    showError('La fase de auditoría no devolvió resultados.', { retryable: true });
-                    return;
-                }
-
-                pendingRewriteContext = {
+                analysisInFlight = false;
+                await handleAuditStageSuccess(auditData, {
                     text,
-                    audit,
-                    auditJson,
-                    auditMode,
                     norma: normaSelect.value,
                     nivel: nivelSelect.value,
-                    docType: auditData.docType || getDocType(),
+                    docType: getDocType(),
                     sessionId,
                     costConfirmed: Boolean(options.costConfirmed),
-                };
-                lastAnalysisContext = { ...pendingRewriteContext };
-
-                analysisInFlight = false;
-                showAuditReview(auditJson, audit, auditMode, auditData.modelUsed, pendingRewriteContext.docType);
+                });
                 return;
             } catch (error) {
                 console.error('Error al obtener sugerencia:', error);
                 showError(error.message || 'No se pudo completar el análisis.', {
-                    retryable: isRetryableThrownError(error) || Boolean(lastAnalysisContext?.text),
+                    retryable: isRetryableThrownError(error) || Boolean(lastAnalysisRequest?.body || lastAnalysisContext?.text),
                 });
             } finally {
                 analysisInFlight = false;

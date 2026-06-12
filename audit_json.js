@@ -305,6 +305,7 @@ module.exports = {
   ZERO_WIDTH_RE,
   AUDIT_JSON_SCHEMA_HINT,
   sanitizeZeroWidth,
+  extractJsonSubstring,
   extractAuditJSON,
   formatAuditProseFromJson,
   formatAuditForRewrite,

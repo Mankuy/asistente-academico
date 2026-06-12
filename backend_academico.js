@@ -31,6 +31,7 @@ const {
 const {
   AUDIT_JSON_SCHEMA_HINT,
   sanitizeZeroWidth,
+  extractJsonSubstring,
   extractAuditJSON,
   formatAuditForRewrite,
   filterAcceptedSuggestions,
@@ -58,6 +59,56 @@ const {
   verifyRewriteIntegrity,
   extractCitations,
 } = require('./integrity_verify');
+
+function assertModuleContracts() {
+  const checks = [
+    ['audit_json.extractJsonSubstring', extractJsonSubstring],
+    ['audit_json.extractAuditJSON', extractAuditJSON],
+    ['audit_json.sanitizeZeroWidth', sanitizeZeroWidth],
+    ['audit_json.formatAuditForRewrite', formatAuditForRewrite],
+    ['audit_json.filterAcceptedSuggestions', filterAcceptedSuggestions],
+    ['revision_audit.extractRevisionAuditJSON', extractRevisionAuditJSON],
+    ['revision_audit.formatRevisionForRewrite', formatRevisionForRewrite],
+    ['revision_audit.filterAcceptedRevisionPoints', filterAcceptedRevisionPoints],
+    ['revision_audit.detectDeterministicRevisionSignals', detectDeterministicRevisionSignals],
+    ['integrity_verify.verifyRewriteIntegrity', verifyRewriteIntegrity],
+    ['integrity_verify.extractCitations', extractCitations],
+    ['docx_export.exportDocxEntregable', exportDocxEntregable],
+    ['docx_export.buildSessionExportText', buildSessionExportText],
+    ['docx_export.safeEntregablePath', safeEntregablePath],
+    ['pdf_export.exportPdfEntregable', exportPdfEntregable],
+    ['guardian.classifyIntentRegex', classifyIntentRegex],
+    ['guardian.parseGuardianJson', parseGuardianJson],
+    ['guardian.estimateCostUsd', estimateCostUsd],
+    ['guardian.estimateStageCostUsd', estimateStageCostUsd],
+    ['bunker.isBunkerMode', isBunkerMode],
+    ['bunker.isLocalhostEndpoint', isLocalhostEndpoint],
+    ['bunker.assertBunkerAllowsEndpoint', assertBunkerAllowsEndpoint],
+    ['sessions_store.listSessions', listSessions],
+    ['sessions_store.getSession', getSession],
+    ['sessions_store.createSession', createSession],
+    ['sessions_store.updateSession', updateSession],
+    ['sessions_store.deleteSession', deleteSession],
+    ['sessions_store.addChapter', addChapter],
+    ['sessions_store.deleteChapter', deleteChapter],
+    ['sessions_store.renameChapter', renameChapter],
+    ['sessions_store.reorderChapters', reorderChapters],
+    ['sessions_store.recordSessionUsage', recordSessionUsage],
+    ['sessions_store.buildSessionContextForLlm', buildSessionContextForLlm],
+    ['biblioteca_store.rebuildBibliotecaIndex', rebuildBibliotecaIndex],
+    ['biblioteca_store.searchBibliotecaLocal', searchBibliotecaLocal],
+    ['biblioteca_store.formatLocalBibliotecaHits', formatLocalBibliotecaHits],
+    ['biblioteca_store.getBibliotecaStatus', getBibliotecaStatus],
+  ];
+
+  for (const [label, fn] of checks) {
+    if (typeof fn !== 'function') {
+      throw new Error(`Import roto: ${label} no está exportada o no es una función (typeof=${typeof fn})`);
+    }
+  }
+}
+
+assertModuleContracts();
 
 const ENV_PATH = path.join(__dirname, '.env');
 

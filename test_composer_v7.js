@@ -5,6 +5,7 @@ const {
   buildThesisChunksFromPages,
 } = require('./public/thesis_classify');
 const {
+  extractRevisionAuditJSON,
   filterAcceptedRevisionPoints,
 } = require('./revision_audit');
 
@@ -95,6 +96,50 @@ async function runRevisionCitationSignalTests() {
   }
 }
 
+function runRevisionAuditJsonPathTest() {
+  const raw = `Análisis preliminar del dictamen recibido:
+
+\`\`\`json
+{
+  "resumen_dictamen": "El revisor solicita mayor rigor metodológico y claridad en citas.",
+  "puntos_revisor": [
+    {
+      "id": "p1",
+      "quote": "La muestra es insuficiente para generalizar.",
+      "tipo": "metodologico",
+      "validez": "parcial",
+      "sugerencia_respuesta": "Justificar el tamaño muestral con un análisis de poder."
+    },
+    {
+      "id": "p2",
+      "quote": "Falta consistencia en el formato APA de las referencias.",
+      "tipo": "formal",
+      "validez": "valido",
+      "sugerencia_respuesta": "Aceptar y detallar las correcciones aplicadas."
+    }
+  ],
+  "indicios_ia": {
+    "nivel": "bajo",
+    "señales": [
+      { "detalle": "Tono uniforme en observaciones extensas", "verificado_por_codigo": false }
+    ]
+  },
+  "recomendacion_general": "Redactar carta formal agradeciendo y respondiendo punto por punto."
+}
+\`\`\`
+
+Fin del informe estructurado.`;
+
+  const result = extractRevisionAuditJSON(raw, []);
+  assert.strictEqual(result.auditMode, 'json', 'debe parsear JSON del camino real');
+  assert.ok(result.auditJson, 'auditJson no debe ser null');
+  assert.strictEqual(result.auditJson.docType, 'revision');
+  assert.strictEqual(result.auditJson.puntos_revisor.length, 2);
+  assert.strictEqual(result.auditJson.sugerencias.length, 2);
+  assert.ok(result.auditJson.resumen_dictamen.includes('rigor metodológico'));
+  assert.ok(result.audit.includes('Puntos del revisor'));
+}
+
 async function runGuardianBypassTests() {
   const turnitinDictamen = 'El informe de Turnitin adjunto muestra similitudes en el capítulo 2.';
   assert.strictEqual(classifyIntentRegex(turnitinDictamen), 'evasion', 'Turnitin dispara evasión en regex');
@@ -118,6 +163,9 @@ async function main() {
 
   runRevisionFilterTests();
   console.log('✓ Filtro de puntos aceptados (2/3) OK');
+
+  runRevisionAuditJsonPathTest();
+  console.log('✓ extractRevisionAuditJSON camino real OK');
 
   await runRevisionCitationSignalTests();
   console.log('✓ Señal Crossref para cita inventada OK');

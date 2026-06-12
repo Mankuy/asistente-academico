@@ -19,6 +19,7 @@ const FILES_TO_COPY = [
   'bunker.js',
   'test_composer_v6.js',
   'test_composer_v7.js',
+  'run_all_tests.js',
   'iniciar_asistente.bat',
   'Dockerfile',
   'docker-compose.yml',
@@ -37,6 +38,7 @@ const PACKAGE_JSON_RELEASE = {
   },
   scripts: {
     start: 'node backend_academico.js',
+    test: 'node run_all_tests.js',
   },
 };
 
