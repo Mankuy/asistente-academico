@@ -1,8 +1,17 @@
 node_modules/
 .env
+.env.*
+!.env.example
 dist_release/
 data/
 entregables/
 biblioteca/
 *.zip
 test_write.txt
+
+# Herramientas locales / flujo interno (no subir)
+.claude/
+.grok/
+.cursor/
+*.png.png
+*.jpg.jpg
