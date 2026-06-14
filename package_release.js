@@ -22,6 +22,7 @@ const FILES_TO_COPY = [
   'integrity_verify.js',
   'bunker.js',
   'iniciar_asistente.bat',
+  'README.md',
   'Dockerfile',
   'docker-compose.yml',
 ];
@@ -163,9 +164,14 @@ function createRelease() {
   copyDir(
     publicSrc,
     path.join(DIST_DIR, 'public'),
-    (name) => name.endsWith('.html') || name === 'thesis_classify.js'
+    (name) => name.endsWith('.html')
+      || name === 'thesis_classify.js'
+      || name === 'logo.png'
+      || name === 'favicon.ico'
+      || name === 'apple-touch-icon.png'
+      || /^favicon-\d+\.png$/.test(name)
   );
-  console.log('  + public/ (.html + thesis_classify.js)');
+  console.log('  + public/ (.html + assets estáticos)');
 
   fs.writeFileSync(
     path.join(DIST_DIR, 'package.json'),
