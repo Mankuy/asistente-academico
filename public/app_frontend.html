@@ -1508,6 +1508,25 @@
             opacity: 0.6;
             cursor: not-allowed;
         }
+        .editor-submit-bar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.65rem 1rem;
+            margin-top: 0.65rem;
+        }
+        .editor-submit-hint {
+            margin: 0;
+            font-size: 0.8rem;
+            color: var(--muted);
+            flex: 1 1 220px;
+        }
+        .btn-editor-submit {
+            flex: 0 0 auto;
+            font-weight: 600;
+            padding: 0.55rem 1.15rem;
+        }
         .context-bar {
             display: flex;
             gap: 0.75rem;
@@ -1750,7 +1769,11 @@
                 <input id="fragment-chapter-title" class="field-hidden" type="text" maxlength="120" placeholder="Título del capítulo o subtítulo">
             </div>
         </div>
-        <textarea id="editor" placeholder="Escriba su texto aquí…" rows="10"></textarea>
+        <textarea id="editor" placeholder="Escribí o pegá tu texto aquí…" rows="10"></textarea>
+        <div class="editor-submit-bar">
+            <p class="editor-submit-hint">Podés escribir y editar con calma; el análisis solo arranca al presionar <strong>Enviar</strong> (también Ctrl+Enter).</p>
+            <button type="button" id="editor-submit-btn" class="btn btn-primary btn-editor-submit">📤 Enviar a revisión</button>
+        </div>
     </section>
     <div id="resizer-editor" class="resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar editor y panel de aprendizaje"></div>
     <aside id="learning-aside">
@@ -1760,7 +1783,7 @@
         </div>
         <div id="usage-meter" class="usage-meter hidden" aria-live="polite"></div>
         <div id="learning-panel">
-            <p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>
+            <p>Escribí o pegá tu texto en el editor y presioná <strong>Enviar</strong>. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>
         </div>
     </aside>
 </main>
@@ -1791,6 +1814,7 @@
 <script>
     (function () {
         const editor = document.getElementById('editor');
+        const editorSubmitBtn = document.getElementById('editor-submit-btn');
         const learningPanel = document.getElementById('learning-panel');
         const settingsBtn = document.getElementById('settings-btn');
         const settingsOverlay = document.getElementById('settings-overlay');
@@ -2369,6 +2393,10 @@
                 ? `<div class="loading-phase"><span class="phase-dot"></span>${escapeHtml(message)}</div>`
                 : `<p class="loading-message">${escapeHtml(message || 'Analizando texto…')}</p>`;
             learningPanel.innerHTML = phaseHtml;
+        }
+
+        function setEditorSubmitEnabled(enabled) {
+            if (editorSubmitBtn) editorSubmitBtn.disabled = !enabled;
         }
 
         function clearRetryCountdown() {
@@ -3634,7 +3662,7 @@
 
         function renderSessionsList(selectId = activeSessionId) {
             if (!sessionsIndex.length) {
-                sessionsListEl.innerHTML = '<p class="session-empty">Sin sesiones aún. Escribí texto y se creará una automáticamente.</p>';
+                sessionsListEl.innerHTML = '<p class="session-empty">Sin sesiones aún. Escribí texto y presioná <strong>Enviar</strong> para crear la primera.</p>';
                 chaptersPanelEl.classList.add('hidden');
                 return;
             }
@@ -3933,7 +3961,7 @@
             } else {
                 learningPanel.innerHTML = activeSessionData
                     ? `<p>Sesión <strong>${escapeHtml(activeSessionData.name)}</strong> activa. Agregá un nuevo fragmento en el editor para el siguiente capítulo.</p>`
-                    : '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+                    : '<p>Escribí o pegá tu texto en el editor y presioná <strong>Enviar</strong>. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
             }
             setTimeout(() => { skipAutoAnalyze = false; }, 0);
         }
@@ -4037,7 +4065,7 @@
                 activeSessionData = null;
                 activeChapterId = null;
                 editor.value = '';
-                learningPanel.innerHTML = '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
+                learningPanel.innerHTML = '<p>Escribí o pegá tu texto en el editor y presioná <strong>Enviar</strong>. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
                 chaptersPanelEl.classList.add('hidden');
             }
 
@@ -4124,6 +4152,7 @@
             if (analysisInFlight && !options.forceRetry) return;
             clearRetryCountdown();
             analysisInFlight = true;
+            setEditorSubmitEnabled(false);
 
             const session = await ensureActiveSession(text);
             const sessionId = session?.id || activeSessionId;
@@ -4192,6 +4221,7 @@
                 });
             } finally {
                 analysisInFlight = false;
+                setEditorSubmitEnabled(true);
             }
         }
 
@@ -4221,29 +4251,30 @@
             }
         });
 
-        function analyzeEditorContent() {
-            if (skipAutoAnalyze) return;
+        function submitEditorForAnalysis() {
             if (pendingRewriteContext) {
                 const reviewedText = String(pendingRewriteContext.text || '').trim();
                 const currentText = editor.value.trim();
-                if (currentText === reviewedText) return;
+                if (currentText === reviewedText) {
+                    showToast('El texto no cambió desde la última revisión.');
+                    return;
+                }
                 pendingRewriteContext = null;
             }
             clearTimeout(debounceTimer);
             const text = editor.value.trim();
 
             if (!text) {
-                if (!activeSessionId) {
-                    learningPanel.innerHTML = '<p>Escribí o subí tu texto. El análisis en dos fases (Auditoría → Optimización) aparecerá aquí.</p>';
-                }
+                showToast('Escribí o pegá texto antes de enviar.', true);
                 return;
             }
 
-            showLoading();
+            if (analysisInFlight) {
+                showToast('Ya hay un análisis en curso…');
+                return;
+            }
 
-            debounceTimer = setTimeout(() => {
-                fetchSuggestion(text);
-            }, DEBOUNCE_MS);
+            fetchSuggestion(text);
         }
 
         function readFileAsText(file) {
@@ -5096,7 +5127,7 @@
                 }
 
                 editor.value = extractedText;
-                analyzeEditorContent();
+                showToast('Documento cargado en el editor. Presioná Enviar cuando quieras iniciar la revisión.', false, true);
             } catch (error) {
                 console.error('Error al procesar archivo:', error);
                 showError(mapExtractionError(error, extension.replace('.', '')));
@@ -5392,12 +5423,14 @@
 
         initSuggestionInteractionDelegation();
 
-        editor.addEventListener('input', analyzeEditorContent);
-        normaSelect.addEventListener('change', () => {
-            updateNormaBadgeTooltip();
-            analyzeEditorContent();
+        editorSubmitBtn?.addEventListener('click', submitEditorForAnalysis);
+        editor.addEventListener('keydown', (event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                event.preventDefault();
+                submitEditorForAnalysis();
+            }
         });
-        nivelSelect.addEventListener('change', analyzeEditorContent);
+        normaSelect.addEventListener('change', updateNormaBadgeTooltip);
     })();
 </script>
 </body>
