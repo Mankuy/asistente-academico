@@ -397,8 +397,46 @@
             padding: 0.6rem;
             background: var(--bg-surface);
         }
-        .suggestion-card.accepted { border-color: rgba(25, 135, 84, 0.45); }
-        .suggestion-card.rejected { opacity: 0.55; border-style: dashed; }
+        .suggestion-card.pending {
+            border-left-width: 4px;
+            border-left-color: var(--muted);
+            background: var(--bg-surface);
+        }
+        .suggestion-card.accepted {
+            border-color: rgba(25, 135, 84, 0.75);
+            border-left-width: 4px;
+            border-left-color: var(--status-ok);
+            background: rgba(25, 135, 84, 0.1);
+            box-shadow: inset 0 0 0 1px rgba(25, 135, 84, 0.12);
+        }
+        .suggestion-card.rejected {
+            border-color: rgba(220, 53, 69, 0.45);
+            border-left-width: 4px;
+            border-left-color: var(--error-text);
+            background: rgba(220, 53, 69, 0.06);
+            opacity: 0.82;
+        }
+        .suggestion-card.rejected .suggestion-quote,
+        .suggestion-card.rejected .suggestion-field {
+            text-decoration: line-through;
+            text-decoration-color: rgba(220, 53, 69, 0.35);
+        }
+        .suggestion-card.decision-flash-accept {
+            animation: suggestion-flash-accept 0.65s ease;
+        }
+        .suggestion-card.decision-flash-reject {
+            animation: suggestion-flash-reject 0.65s ease;
+        }
+        @keyframes suggestion-flash-accept {
+            0% { transform: scale(1); box-shadow: none; }
+            30% { transform: scale(1.02); box-shadow: 0 0 0 4px rgba(25, 135, 84, 0.45); background: rgba(25, 135, 84, 0.22); }
+            100% { transform: scale(1); }
+        }
+        @keyframes suggestion-flash-reject {
+            0% { transform: scale(1); box-shadow: none; }
+            30% { transform: scale(1.02); box-shadow: 0 0 0 4px rgba(220, 53, 69, 0.4); background: rgba(220, 53, 69, 0.16); }
+            100% { transform: scale(1); }
+        }
         .suggestion-card-head {
             display: flex;
             justify-content: space-between;
@@ -406,6 +444,43 @@
             gap: 0.5rem;
             margin-bottom: 0.4rem;
             flex-wrap: wrap;
+        }
+        .suggestion-status-chip {
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 0.18rem 0.5rem;
+            border-radius: 999px;
+            white-space: nowrap;
+        }
+        .suggestion-status-chip.is-pending {
+            color: var(--muted);
+            background: var(--badge-bg);
+            border: 1px dashed var(--border);
+        }
+        .suggestion-status-chip.is-accepted {
+            color: var(--status-ok);
+            background: rgba(25, 135, 84, 0.18);
+        }
+        .suggestion-status-chip.is-rejected {
+            color: var(--error-text);
+            background: rgba(220, 53, 69, 0.14);
+        }
+        .suggestion-decisions-bar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem 0.75rem;
+            font-size: 0.82rem;
+            margin: 0.35rem 0 0.65rem;
+            padding: 0.45rem 0.6rem;
+            border-radius: 0.4rem;
+            background: var(--badge-bg);
+            border: 1px solid var(--border);
+        }
+        .suggestion-decisions-bar strong { color: var(--text-primary); }
+        .suggestion-decisions-hint {
+            color: var(--muted);
+            font-size: 0.78rem;
         }
         .severity-badge {
             font-size: 0.68rem;
@@ -424,9 +499,33 @@
             border: 1px solid var(--border);
             background: var(--bg-primary);
             cursor: pointer;
+            transition: transform 0.12s ease, background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
         }
-        .btn-suggestion.active-accept { border-color: var(--status-ok); color: var(--status-ok); }
-        .btn-suggestion.active-reject { border-color: var(--error-text); color: var(--error-text); }
+        .btn-suggestion:active {
+            transform: scale(0.94);
+        }
+        .btn-suggestion.btn-click-pop {
+            animation: btn-click-pop 0.35s ease;
+        }
+        @keyframes btn-click-pop {
+            0% { transform: scale(1); }
+            40% { transform: scale(1.08); }
+            100% { transform: scale(1); }
+        }
+        .btn-suggestion.active-accept {
+            border-color: var(--status-ok);
+            color: #fff;
+            background: var(--status-ok);
+            font-weight: 700;
+        }
+        .btn-suggestion.active-reject {
+            border-color: var(--error-text);
+            color: #fff;
+            background: var(--error-text);
+            font-weight: 700;
+        }
+        .dark-theme .btn-suggestion.active-accept { color: #0b1f14; }
+        .dark-theme .btn-suggestion.active-reject { color: #fff; }
         .suggestion-quote {
             font-size: 0.8rem;
             border-left: 3px solid var(--accent);
@@ -1142,6 +1241,11 @@
         .app-toast.error {
             border-color: rgba(220, 53, 69, 0.45);
             background: rgba(220, 53, 69, 0.08);
+        }
+        .app-toast.success {
+            border-color: rgba(25, 135, 84, 0.55);
+            background: rgba(25, 135, 84, 0.12);
+            color: var(--text);
         }
         @keyframes toast-in {
             from { opacity: 0; transform: translateY(0.35rem); }
@@ -2274,7 +2378,7 @@
             }
         }
 
-        function showToast(message, isError = false) {
+        function showToast(message, isError = false, isSuccess = false) {
             if (toastTimer) {
                 clearTimeout(toastTimer);
                 toastTimer = null;
@@ -2284,7 +2388,7 @@
 
             const toast = document.createElement('div');
             toast.id = 'app-toast';
-            toast.className = `app-toast${isError ? ' error' : ''}`;
+            toast.className = `app-toast${isError ? ' error' : ''}${isSuccess ? ' success' : ''}`;
             toast.textContent = message;
             document.body.appendChild(toast);
             toastTimer = setTimeout(() => {
@@ -2942,15 +3046,19 @@
                 </article>`;
             }
 
-            const accepted = state !== 'rejected';
-            const cardClass = state === 'rejected' ? 'rejected' : 'accepted';
+            const accepted = state === 'accepted';
+            const rejected = state === 'rejected';
+            const cardClass = rejected ? 'rejected' : (accepted ? 'accepted' : 'pending');
+            const statusLabel = rejected ? '✕ Rechazada' : (accepted ? '✓ Aceptada' : '◯ Pendiente');
+            const statusClass = rejected ? 'is-rejected' : (accepted ? 'is-accepted' : 'is-pending');
             return `
                 <article class="suggestion-card ${cardClass}" data-suggestion-id="${escapeAttr(item.id)}">
                     <div class="suggestion-card-head">
                         <span class="severity-badge ${escapeAttr(item.severity)}">${escapeHtml(item.severity)}</span>
+                        <span class="suggestion-status-chip ${statusClass}" aria-live="polite">${statusLabel}</span>
                         <div class="suggestion-actions">
-                            <button type="button" class="btn-suggestion btn-accept ${accepted ? 'active-accept' : ''}" data-action="accept" data-id="${escapeAttr(item.id)}">${acceptLabel}</button>
-                            <button type="button" class="btn-suggestion btn-reject ${!accepted ? 'active-reject' : ''}" data-action="reject" data-id="${escapeAttr(item.id)}">${rejectLabel}</button>
+                            <button type="button" class="btn-suggestion btn-accept ${accepted ? 'active-accept' : ''}" data-action="accept" data-id="${escapeAttr(item.id)}" aria-pressed="${accepted ? 'true' : 'false'}">${acceptLabel}</button>
+                            <button type="button" class="btn-suggestion btn-reject ${rejected ? 'active-reject' : ''}" data-action="reject" data-id="${escapeAttr(item.id)}" aria-pressed="${rejected ? 'true' : 'false'}">${rejectLabel}</button>
                         </div>
                     </div>
                     <blockquote class="suggestion-quote suggestion-quote-clickable" data-quote-jump="${escapeAttr(item.quote)}" title="📍 Ver en tu texto">"${escapeHtml(item.quote)}"</blockquote>
@@ -2980,16 +3088,107 @@
             return learningPanel.querySelector(`.suggestion-card[data-suggestion-id="${escapeSelectorValue(id)}"]`);
         }
 
-        function applySuggestionDecision(id, action) {
+        function getSuggestionDecisionStats() {
+            const items = pendingRewriteContext?.auditJson?.sugerencias
+                || Object.keys(suggestionDecisions).map((id) => ({ id, quote_verified: true }));
+            let accepted = 0;
+            let rejected = 0;
+            let pending = 0;
+            let total = 0;
+            for (const item of items) {
+                if (item.quote_verified === false) continue;
+                total += 1;
+                const state = suggestionDecisions[item.id] || 'pending';
+                if (state === 'rejected') rejected += 1;
+                else if (state === 'accepted') accepted += 1;
+                else pending += 1;
+            }
+            return { accepted, rejected, pending, total };
+        }
+
+        function buildSuggestionDecisionsSummaryHtml() {
+            const { accepted, rejected, pending, total } = getSuggestionDecisionStats();
+            if (!total) return '';
+            const pendingHtml = pending
+                ? `<strong>${pending} pendiente${pending === 1 ? '' : 's'}</strong><span>·</span>`
+                : '';
+            return `
+                <div class="suggestion-decisions-bar" id="suggestion-decisions-summary" aria-live="polite">
+                    ${pendingHtml}
+                    <strong>${accepted} aceptada${accepted === 1 ? '' : 's'}</strong>
+                    <span>·</span>
+                    <strong>${rejected} rechazada${rejected === 1 ? '' : 's'}</strong>
+                    <span class="suggestion-decisions-hint">de ${total} — tocá un botón y la tarjeta cambia de color</span>
+                </div>`;
+        }
+
+        function updateSuggestionDecisionsSummary() {
+            const summaryEl = document.getElementById('suggestion-decisions-summary');
+            if (!summaryEl) return;
+            const { accepted, rejected, pending, total } = getSuggestionDecisionStats();
+            const pendingHtml = pending
+                ? `<strong>${pending} pendiente${pending === 1 ? '' : 's'}</strong><span>·</span>`
+                : '';
+            summaryEl.innerHTML = `
+                ${pendingHtml}
+                <strong>${accepted} aceptada${accepted === 1 ? '' : 's'}</strong>
+                <span>·</span>
+                <strong>${rejected} rechazada${rejected === 1 ? '' : 's'}</strong>
+                <span class="suggestion-decisions-hint">de ${total} — tocá un botón y la tarjeta cambia de color</span>`;
+        }
+
+        function flashSuggestionCard(card, accepted) {
+            if (!card) return;
+            const flashClass = accepted ? 'decision-flash-accept' : 'decision-flash-reject';
+            card.classList.remove('decision-flash-accept', 'decision-flash-reject');
+            void card.offsetWidth;
+            card.classList.add(flashClass);
+            window.setTimeout(() => card.classList.remove(flashClass), 700);
+        }
+
+        function popSuggestionButton(btn) {
+            if (!btn) return;
+            btn.classList.remove('btn-click-pop');
+            void btn.offsetWidth;
+            btn.classList.add('btn-click-pop');
+            window.setTimeout(() => btn.classList.remove('btn-click-pop'), 400);
+        }
+
+        function applySuggestionDecision(id, action, clickedBtn = null) {
             if (!id || !action) return;
             const accepted = action === 'accept';
-            suggestionDecisions[id] = accepted ? 'accepted' : 'rejected';
+            const nextState = accepted ? 'accepted' : 'rejected';
+            const previousState = suggestionDecisions[id] || 'pending';
+            suggestionDecisions[id] = nextState;
             const card = findSuggestionCardById(id);
             if (!card) return;
-            card.classList.toggle('accepted', accepted);
-            card.classList.toggle('rejected', !accepted);
-            card.querySelector('.btn-accept')?.classList.toggle('active-accept', accepted);
-            card.querySelector('.btn-reject')?.classList.toggle('active-reject', !accepted);
+            card.classList.remove('pending', 'accepted', 'rejected');
+            card.classList.add(accepted ? 'accepted' : 'rejected');
+
+            const statusChip = card.querySelector('.suggestion-status-chip');
+            if (statusChip) {
+                statusChip.textContent = accepted ? '✓ Aceptada' : '✕ Rechazada';
+                statusChip.classList.remove('is-pending', 'is-accepted', 'is-rejected');
+                statusChip.classList.add(accepted ? 'is-accepted' : 'is-rejected');
+            }
+
+            const acceptBtn = card.querySelector('.btn-accept');
+            const rejectBtn = card.querySelector('.btn-reject');
+            acceptBtn?.classList.toggle('active-accept', accepted);
+            rejectBtn?.classList.toggle('active-reject', !accepted);
+            acceptBtn?.setAttribute('aria-pressed', accepted ? 'true' : 'false');
+            rejectBtn?.setAttribute('aria-pressed', !accepted ? 'true' : 'false');
+
+            popSuggestionButton(clickedBtn || (accepted ? acceptBtn : rejectBtn));
+            flashSuggestionCard(card, accepted);
+            updateSuggestionDecisionsSummary();
+
+            if (previousState === nextState) {
+                showToast(accepted ? 'Ya estaba aceptada' : 'Ya estaba rechazada');
+                return;
+            }
+            showToast(accepted ? '✓ Sugerencia aceptada' : '✕ Sugerencia rechazada', false, accepted);
+            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
         function initSuggestionInteractionDelegation() {
@@ -3001,7 +3200,7 @@
                 if (btn) {
                     event.preventDefault();
                     event.stopPropagation();
-                    applySuggestionDecision(btn.dataset.id, btn.dataset.action);
+                    applySuggestionDecision(btn.dataset.id, btn.dataset.action, btn);
                     return;
                 }
 
@@ -3059,10 +3258,13 @@
 
             suggestionDecisions = {};
             sugerencias.forEach((item) => {
-                suggestionDecisions[item.id] = item.quote_verified === false ? 'rejected' : 'accepted';
+                suggestionDecisions[item.id] = item.quote_verified === false ? 'rejected' : 'pending';
             });
 
-            const cardsHtml = sugerencias.map((item) => buildSuggestionCardHtml(item, 'accepted', revisionMode)).join('');
+            const cardsHtml = sugerencias.map((item) => {
+                const state = item.quote_verified === false ? 'rejected' : 'pending';
+                return buildSuggestionCardHtml(item, state, revisionMode);
+            }).join('');
             const checklistHtml = (auditJson.checklist || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
             const biblioHtml = (auditJson.biblio_check || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
             const indiciosHtml = revisionMode ? buildRevisionIndiciosHtml(auditJson.indicios_ia) : '';
@@ -3077,8 +3279,9 @@
                 ? ''
                 : `<span class="veredicto-badge ${escapeAttr(auditJson.veredicto)}">${escapeHtml(verdictLabel(auditJson.veredicto))}</span>`;
             const cardsIntro = revisionMode
-                ? '<p class="suggestion-field"><strong>Puntos del revisor</strong> — aceptá los que quieras incluir en la carta:</p>'
-                : '';
+                ? '<p class="suggestion-field"><strong>Puntos del revisor</strong> — cada tarjeta empieza <em>pendiente</em> (gris). Tocá <em>Responder</em> u <em>Omitir</em>: verde o roja + aviso abajo a la derecha.</p>'
+                : '<p class="suggestion-field"><strong>Sugerencias</strong> — cada tarjeta empieza <em>pendiente</em> (gris). Tocá <em>Aceptar</em> o <em>Rechazar</em>: verde o roja + aviso abajo a la derecha.</p>';
+            const decisionsSummaryHtml = buildSuggestionDecisionsSummaryHtml();
 
             learningPanel.innerHTML = `
                 ${modelBadge}
@@ -3091,6 +3294,7 @@
                     ${recomendacionHtml}
                     ${indiciosHtml}
                     ${cardsIntro}
+                    ${decisionsSummaryHtml}
                     <div class="suggestion-cards" id="suggestion-cards">${cardsHtml || '<p>Sin puntos accionables.</p>'}</div>
                     ${checklistHtml ? `<ul class="audit-checklist">${checklistHtml}</ul>` : ''}
                     ${biblioHtml ? `<p class="suggestion-field"><strong>Biblio:</strong></p><ul class="audit-checklist">${biblioHtml}</ul>` : ''}
@@ -3110,7 +3314,7 @@
                 ? (() => {
                     const sugerencias = Array.isArray(auditJson.sugerencias) ? auditJson.sugerencias : [];
                     const cardsHtml = sugerencias.map((item) => {
-                        const state = suggestionDecisions[item.id] || 'accepted';
+                        const state = suggestionDecisions[item.id] || 'pending';
                         return buildSuggestionCardHtml(item, state, revisionMode);
                     }).join('');
                     const resumenText = revisionMode
