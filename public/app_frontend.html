@@ -918,6 +918,7 @@
         #learning-panel {
             flex: 1;
             min-height: 0;
+            overflow-y: auto;
         }
         main.learning-maximized #sessions-aside,
         main.learning-maximized #resizer-sessions,
@@ -2966,27 +2967,55 @@
                 .map((item) => item.id);
         }
 
-        function bindSuggestionCardEvents() {
-            learningPanel.querySelectorAll('.btn-suggestion').forEach((btn) => {
-                btn.addEventListener('click', () => {
-                    const id = btn.dataset.id;
-                    const action = btn.dataset.action;
-                    suggestionDecisions[id] = action === 'accept' ? 'accepted' : 'rejected';
-                    const card = learningPanel.querySelector(`.suggestion-card[data-suggestion-id="${id}"]`);
-                    if (!card) return;
-                    card.classList.toggle('accepted', action === 'accept');
-                    card.classList.toggle('rejected', action === 'reject');
-                    card.querySelector('.btn-accept')?.classList.toggle('active-accept', action === 'accept');
-                    card.querySelector('.btn-reject')?.classList.toggle('active-reject', action === 'reject');
-                });
-            });
+        function escapeSelectorValue(value) {
+            const raw = String(value || '');
+            if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+                return CSS.escape(raw);
+            }
+            return raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        }
 
-            learningPanel.querySelectorAll('.suggestion-quote-clickable[data-quote-jump]').forEach((quoteEl) => {
-                quoteEl.addEventListener('click', (event) => {
+        function findSuggestionCardById(id) {
+            if (!id || !learningPanel) return null;
+            return learningPanel.querySelector(`.suggestion-card[data-suggestion-id="${escapeSelectorValue(id)}"]`);
+        }
+
+        function applySuggestionDecision(id, action) {
+            if (!id || !action) return;
+            const accepted = action === 'accept';
+            suggestionDecisions[id] = accepted ? 'accepted' : 'rejected';
+            const card = findSuggestionCardById(id);
+            if (!card) return;
+            card.classList.toggle('accepted', accepted);
+            card.classList.toggle('rejected', !accepted);
+            card.querySelector('.btn-accept')?.classList.toggle('active-accept', accepted);
+            card.querySelector('.btn-reject')?.classList.toggle('active-reject', !accepted);
+        }
+
+        function initSuggestionInteractionDelegation() {
+            if (!learningAside || learningAside.dataset.suggestionDelegation === '1') return;
+            learningAside.dataset.suggestionDelegation = '1';
+
+            learningAside.addEventListener('click', (event) => {
+                const btn = event.target.closest('.btn-suggestion');
+                if (btn) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    applySuggestionDecision(btn.dataset.id, btn.dataset.action);
+                    return;
+                }
+
+                const quoteEl = event.target.closest('.suggestion-quote-clickable[data-quote-jump]');
+                if (quoteEl) {
+                    event.preventDefault();
                     event.stopPropagation();
                     jumpToQuote(quoteEl.dataset.quoteJump || '');
-                });
+                }
             });
+        }
+
+        function bindSuggestionCardEvents() {
+            initSuggestionInteractionDelegation();
         }
 
         function buildRevisionIndiciosHtml(indiciosIa) {
@@ -3026,12 +3055,14 @@
                 return;
             }
 
+            const sugerencias = Array.isArray(auditJson.sugerencias) ? auditJson.sugerencias : [];
+
             suggestionDecisions = {};
-            auditJson.sugerencias.forEach((item) => {
+            sugerencias.forEach((item) => {
                 suggestionDecisions[item.id] = item.quote_verified === false ? 'rejected' : 'accepted';
             });
 
-            const cardsHtml = auditJson.sugerencias.map((item) => buildSuggestionCardHtml(item, 'accepted', revisionMode)).join('');
+            const cardsHtml = sugerencias.map((item) => buildSuggestionCardHtml(item, 'accepted', revisionMode)).join('');
             const checklistHtml = (auditJson.checklist || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
             const biblioHtml = (auditJson.biblio_check || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
             const indiciosHtml = revisionMode ? buildRevisionIndiciosHtml(auditJson.indicios_ia) : '';
@@ -3077,7 +3108,8 @@
             const revisionMode = isRevisionDocType(docType) || auditJson?.docType === 'revision';
             const auditSection = auditJson && auditMode === 'json'
                 ? (() => {
-                    const cardsHtml = auditJson.sugerencias.map((item) => {
+                    const sugerencias = Array.isArray(auditJson.sugerencias) ? auditJson.sugerencias : [];
+                    const cardsHtml = sugerencias.map((item) => {
                         const state = suggestionDecisions[item.id] || 'accepted';
                         return buildSuggestionCardHtml(item, state, revisionMode);
                     }).join('');
@@ -3987,6 +4019,12 @@
 
         function analyzeEditorContent() {
             if (skipAutoAnalyze) return;
+            if (pendingRewriteContext) {
+                const reviewedText = String(pendingRewriteContext.text || '').trim();
+                const currentText = editor.value.trim();
+                if (currentText === reviewedText) return;
+                pendingRewriteContext = null;
+            }
             clearTimeout(debounceTimer);
             const text = editor.value.trim();
 
@@ -5147,6 +5185,8 @@
         });
 
         apiJson('/api/biblioteca/reindex', { method: 'POST' }).catch(() => {});
+
+        initSuggestionInteractionDelegation();
 
         editor.addEventListener('input', analyzeEditorContent);
         normaSelect.addEventListener('change', () => {
